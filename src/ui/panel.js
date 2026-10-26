@@ -62,9 +62,30 @@ textarea {
 }
 .empty { color: #999; padding: 24px 0; text-align: center; }
 .status { font-size: 12px; color: #555; }
+
+/* Finger-sized hit areas; the desktop sizes assume a mouse. */
+@media (pointer: coarse) {
+  .tabs button { padding: 10px 12px; font-size: 14px; }
+  .close { padding: 10px 14px; }
+  button.small, button.danger { padding: 9px 12px; font-size: 13px; }
+  ul.entries li { padding: 11px 0; }
+  .search, textarea { font-size: 16px; } /* below 16px iOS zooms the page on focus */
+  .dialog { width: calc(100vw - 16px); max-height: calc(100vh - 24px); }
+  .body { padding: 12px 14px; }
+}
 `;
 
-export function createPanel({ document, settings, book, host, onGlossChange, onClearCache, onLookupToggle }) {
+export function createPanel({
+  document,
+  settings,
+  book,
+  host,
+  onGlossChange,
+  onClearCache,
+  onLookupToggle,
+  lookupSwitchLabel = '双击取词',
+  touch = false,
+}) {
   const hostEl = document.createElement('div');
   hostEl.setAttribute('data-tm', 'panel-host');
   hostEl.style.cssText = 'all:initial;';
@@ -72,14 +93,23 @@ export function createPanel({ document, settings, book, host, onGlossChange, onC
   const style = document.createElement('style');
   style.textContent = STYLE;
   shadow.append(style);
-  hostEl.hidden = true;
+
+  /*
+   * The inline `all: initial` defeats the UA sheet's `[hidden]` rule (author
+   * origin wins), so the display has to be toggled inline as well.
+   */
+  function setHidden(hidden) {
+    hostEl.hidden = hidden;
+    hostEl.style.display = hidden ? 'none' : 'block';
+  }
+  setHidden(true);
   document.documentElement.appendChild(hostEl);
 
   let tab = 'book';
   let filter = '';
 
   function close() {
-    hostEl.hidden = true;
+    setHidden(true);
     shadow.querySelector('.backdrop')?.remove();
   }
 
@@ -122,7 +152,7 @@ export function createPanel({ document, settings, book, host, onGlossChange, onC
     backdrop.append(dialog);
     shadow.querySelector('.backdrop')?.remove();
     shadow.append(backdrop);
-    hostEl.hidden = false;
+    setHidden(false);
   }
 
   function renderBook() {
@@ -206,7 +236,7 @@ export function createPanel({ document, settings, book, host, onGlossChange, onC
       settings.setLookupEnabled(lookupBox.checked);
       onLookupToggle?.(lookupBox.checked);
     };
-    lookupLabel.append(lookupBox, document.createTextNode('双击取词'));
+    lookupLabel.append(lookupBox, document.createTextNode(lookupSwitchLabel));
     lookupRow.append(lookupLabel);
 
     const glossRow = document.createElement('div');
@@ -309,8 +339,9 @@ export function createPanel({ document, settings, book, host, onGlossChange, onC
   function helpText() {
     const p = document.createElement('p');
     p.className = 'status';
-    p.textContent =
-      '双击网页上的词即可查询。注音只对生词本里已有的词生效,默认关闭,按站点开启。';
+    p.textContent = touch
+      ? '长按选中网页上的词,再点选区旁的「译」即可查询。注音只对生词本里已有的词生效,默认关闭,按站点开启。'
+      : '双击网页上的词即可查询。注音只对生词本里已有的词生效,默认关闭,按站点开启。';
     return p;
   }
 

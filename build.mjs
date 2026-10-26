@@ -18,8 +18,8 @@ const OUT = resolve(ROOT, 'dist/translate-tampermokey.user.js');
 const META = `// ==UserScript==
 // @name         Translate Tampermokey
 // @namespace    https://github.com/local/translate-tampermokey
-// @version      0.1.0
-// @description  双击取词弹窗翻译,收藏进生词本,生词本词条以注音形式常驻原文右侧
+// @version      0.2.0
+// @description  选词弹窗翻译(桌面双击 / 触屏选词后点「译」),收藏进生词本,生词本词条以注音形式常驻原文右侧
 // @author       local
 // @match        *://*/*
 // @exclude      *://localhost/*

@@ -9,8 +9,10 @@ import { dictionaryDev, freedictionary, createTranslator } from './core/provider
 import { createSettings, createBook, createLookupCache, createGmStorage } from './app/storage.js';
 import { createLookupFlow, addEntry } from './app/lookup-flow.js';
 import { createPopup } from './ui/popup.js';
+import { createBubble } from './ui/bubble.js';
 import { createGlossLayer } from './ui/gloss-layer.js';
 import { createPanel } from './ui/panel.js';
+import { isTouchPrimary, shouldOfferBubble, selectionTerm, isOwnSelection } from './core/gesture.js';
 
 const gm = {
   getValue: (key, fallback) => (typeof GM_getValue === 'function' ? GM_getValue(key, fallback) : fallback),
@@ -23,6 +25,13 @@ const gm = {
 };
 
 const host = location.hostname;
+
+/**
+ * A phone has no reliable double-click (Chrome only fires it with double-tap
+ * zoom off, iOS never), so touch devices get a Bubble next to the finished
+ * Selection instead. Desktop keeps the double-click.
+ */
+const touchPrimary = isTouchPrimary(window);
 
 /** Userscript-manager-native HTTP, which bypasses page CSP and CORS. */
 function fetchText(url) {
@@ -137,6 +146,7 @@ function createDictionaryLookup({ fetchText, cache }) {
 
 const popup = createPopup({
   document,
+  touch: touchPrimary,
   onAdd: async (entry) => {
     if (!entry) return;
     addEntry(book, entry, () => refreshGlosses());
@@ -144,6 +154,25 @@ const popup = createPopup({
   onSpeak: (term, lang) => speak(term, lang),
   onClose: () => {},
 });
+
+/**
+ * Touch devices get a Bubble next to the finished Selection instead of relying
+ * on double-click. Desktop gets a no-op stand-in so the rest of the code does
+ * not have to branch — and so no Bubble host is added to a desktop page.
+ */
+let pendingSelection = null;
+
+const bubble = touchPrimary
+  ? createBubble({
+      document,
+      window,
+      onTap: (rect) => {
+        const term = pendingSelection;
+        pendingSelection = null;
+        lookupTerm(term, rect);
+      },
+    })
+  : { show() {}, hide() {} };
 
 const gloss = createGlossLayer({ document, window, translationMap: new Map() });
 
@@ -154,7 +183,15 @@ const panel = createPanel({
   host,
   onGlossChange: () => applyGlossSetting(),
   onClearCache: () => cache.clear(),
-  onLookupToggle: () => {},
+  onLookupToggle: () => {
+    // Turning lookup off must also take the Bubble away.
+    if (!settings.lookupEnabled) {
+      bubble.hide();
+      pendingSelection = null;
+    }
+  },
+  lookupSwitchLabel: touchPrimary ? '选词后点「译」查询' : '双击取词',
+  touch: touchPrimary,
 });
 
 const flow = createLookupFlow({
@@ -205,12 +242,130 @@ function onDoubleClick(event) {
   const term = flow.readSelection(selection);
   if (!term) return;
   const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  // A browser that does fire dblclick on touch has already answered via the
+  // Popup, so the Bubble must not linger over it.
+  bubble.hide();
+  pendingSelection = null;
   flow.lookup({ term, anchor: anchorOf(range) });
 }
 
-/** Close the popup on the next click elsewhere, and on Escape. */
+/** Start a lookup for `term`, ignoring empty input. */
+function lookupTerm(term, anchor) {
+  if (!term) return;
+  if (touchPrimary) {
+    // Drop the native highlight: on a phone it covers the words around the one
+    // being looked up, and its drag handles sit on top of the Popup.
+    window.getSelection()?.removeAllRanges?.();
+  }
+  flow.lookup({ term, anchor });
+}
+
+/** Anchor of the current Selection, for the Bubble and the Popup. */
+function currentAnchor() {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return null;
+  return anchorOf(selection.getRangeAt(0));
+}
+
+/**
+ * Touch path: offer the Bubble once a Selection settles.
+ *
+ * `selectionchange` fires continuously while the user drags the selection
+ * handles, so it is debounced until the gesture stops. Called on both
+ * `selectionchange` and `touchend` (iOS sometimes settles the selection after
+ * the finger lifts, and the debounce swallows the duplicate).
+ */
+let selectionTimer = null;
+/** Set when a tap just dismissed the Popup, so the Bubble does not bounce back. */
+let dismissedAt = 0;
+
+function evaluateSelection() {
+  if (!settings.lookupEnabled) {
+    bubble.hide();
+    return;
+  }
+  /*
+   * A tap outside the Popup closes it. Mobile browsers often leave the
+   * Selection in place after such a tap, so the very same selection would pop
+   * the Bubble back up 60ms later — the user's "dismiss" would look broken.
+   */
+  if (Date.now() - dismissedAt < 500) {
+    bubble.hide();
+    pendingSelection = null;
+    return;
+  }
+  const selection = window.getSelection();
+  // Selecting text inside the Popup or Panel is not a lookup; the chain has to
+  // be followed through the shadow root to notice it.
+  if (!shouldOfferBubble({ selection, isOwnUi: isOwnSelection(selection) })) {
+    // The user collapsed or replaced the selection: the Bubble is stale now.
+    bubble.hide();
+    pendingSelection = null;
+    return;
+  }
+  const text = selectionTerm(selection);
+  // Some mobile browsers do fire dblclick (Chrome, when double-tap zoom is
+  // off). The Popup already answering for this word makes the Bubble noise.
+  if (popup.current?.term === text) {
+    bubble.hide();
+    pendingSelection = null;
+    return;
+  }
+  // A fresh selection supersedes whatever the Popup was showing.
+  if (popup.current) popup.hide();
+
+  pendingSelection = text;
+  bubble.show(currentAnchor());
+}
+
+function onSelectionChange() {
+  if (selectionTimer) clearTimeout(selectionTimer);
+  selectionTimer = setTimeout(evaluateSelection, 250);
+}
+
+/** Where the finger went down, so a drag can be told apart from a tap. */
+let touchOrigin = null;
+
+function onTouchStart(event) {
+  const touch = event.touches?.[0];
+  touchOrigin = touch ? { x: touch.clientX, y: touch.clientY } : null;
+}
+
+function onTouchEnd(event) {
+  const touch = event.changedTouches?.[0];
+  const moved =
+    touchOrigin && touch
+      ? Math.hypot(touch.clientX - touchOrigin.x, touch.clientY - touchOrigin.y) > 12
+      : false;
+  touchOrigin = null;
+  // A drag is a scroll or a selection-handle move; both end with their own
+  // `selectionchange`, so nothing needs deciding here.
+  if (moved) return;
+  // Taps on our own UI (the Bubble, the Popup, the Panel) are that UI's
+  // business. Touch events are composed, so at document level their target is
+  // retargeted to the shadow host, which carries the marker.
+  if (event.target?.closest?.('[data-tm]')) return;
+
+  // A tap elsewhere dismisses the Popup, as a click does on desktop.
+  if (popup.current) {
+    popup.hide();
+    dismissedAt = Date.now();
+  }
+  // The selection is finalised right after touchend, not during it.
+  setTimeout(evaluateSelection, 60);
+}
+
+/**
+ * Close the popup on the next click elsewhere, and on Escape.
+ *
+ * This listener is on `document` in the capture phase, so it runs before any
+ * listener inside our own UI can stop the event. A tap on the Bubble therefore
+ * arrives here first: our own UI must be matched by marker, not by containment,
+ * or opening the Popup would close it in the same gesture.
+ */
 function onDocumentClick(event) {
   if (!popup.current) return;
+  if (event.target?.closest?.('[data-tm]')) return;
   if (popup.contains(event.target)) return;
   popup.hide();
 }
@@ -226,6 +381,14 @@ function start() {
   document.addEventListener('dblclick', onDoubleClick, true);
   document.addEventListener('mousedown', onDocumentClick, true);
   document.addEventListener('keydown', onKeyDown, true);
+
+  if (touchPrimary) {
+    document.addEventListener('selectionchange', onSelectionChange, true);
+    document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+    document.addEventListener('touchend', onTouchEnd, true);
+    // Scrolling changes where the Selection sits, so the Bubble would drift.
+    window.addEventListener('scroll', () => bubble.hide(), { capture: true, passive: true });
+  }
 
   applyGlossSetting();
 

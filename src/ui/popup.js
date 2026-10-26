@@ -5,12 +5,14 @@
  * Rendered into a Shadow DOM host so the host page's CSS cannot restyle it and
  * our CSS cannot leak out. All styles are inline in one stylesheet string.
  */
+import { placeNear } from '../core/gesture.js';
 
 const STYLE = `
 :host { all: initial; }
 .wrap {
   position: fixed;
   z-index: 2147483647;
+  box-sizing: border-box;
   max-width: 320px;
   min-width: 180px;
   background: #fff;
@@ -24,8 +26,21 @@ const STYLE = `
   opacity: 0;
   transform: translateY(4px);
   transition: opacity .12s ease, transform .12s ease;
+  /*
+   * The host zeroes its own box, so the browser's attribute-hiding rule cannot
+   * be relied on to hide this: before the first render the Popup sits
+   * unpositioned at the viewport corner. Invisible boxes still eat clicks, so
+   * it must be untouchable until shown.
+   */
+  visibility: hidden;
+  pointer-events: none;
 }
-.wrap.show { opacity: 1; transform: translateY(0); }
+.wrap.show {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  pointer-events: auto;
+}
 .head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .term { font-weight: 600; font-size: 15px; word-break: break-word; }
 .phonetic { color: #6b6b6b; font-size: 12px; }
@@ -52,9 +67,34 @@ button.ghost {
 .hint { color: #9a9a9a; font-size: 11px; margin-left: auto; }
 .error { color: #b91c1c; }
 .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+
+/*
+ * Touch screens: the Popup is the main surface, so it may use the full width
+ * and every control gets a finger-sized hit area (44px is the usual minimum).
+ */
+.wrap.touch {
+  max-width: none;
+  /* Full width on a phone, but not a 900px ribbon on a tablet. */
+  width: min(420px, calc(100vw - 20px));
+  padding: 12px 14px;
+  font-size: 15px;
+}
+.wrap.touch button.primary { padding: 11px 16px; font-size: 15px; }
+.wrap.touch button.ghost { padding: 10px; font-size: 14px; }
+.wrap.touch .speak { padding: 7px 10px; font-size: 14px; }
+.wrap.touch .close { display: block; }
+/* Only the head row shares space with the close button; everything below it
+   starts under the button's 36px box. */
+.wrap.touch .head,
+.wrap.touch > .term { padding-right: 36px; }
+.close {
+  all: unset; display: none; position: absolute; top: 2px; right: 2px;
+  width: 36px; height: 36px; text-align: center; line-height: 36px;
+  color: #8a8a8a; font-size: 18px; cursor: pointer;
+}
 `;
 
-export function createPopup({ document, onAdd, onSpeak, onClose }) {
+export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }) {
   const host = document.createElement('div');
   host.setAttribute('data-tm', 'popup-host');
   host.style.cssText = 'all:initial; position:fixed; top:0; left:0; width:0; height:0;';
@@ -62,11 +102,27 @@ export function createPopup({ document, onAdd, onSpeak, onClose }) {
   const style = document.createElement('style');
   style.textContent = STYLE;
   const wrap = document.createElement('div');
-  wrap.className = 'wrap';
+  wrap.className = touch ? 'wrap touch' : 'wrap';
   wrap.setAttribute('role', 'dialog');
   wrap.setAttribute('aria-live', 'polite');
+  const close = document.createElement('button');
+  close.className = 'close';
+  close.setAttribute('aria-label', '关闭');
+  close.textContent = '✕';
+  close.onclick = () => hide();
   shadow.append(style, wrap);
-  host.hidden = true;
+
+  /*
+   * `host.hidden` alone would not hide this: the host's inline `all: initial`
+   * sets `display: inline` in the author origin, which outranks the UA sheet's
+   * `[hidden] { display: none }`. The display has to be toggled inline so the
+   * invisible box cannot sit over the page.
+   */
+  function setHidden(hidden) {
+    host.hidden = hidden;
+    host.style.display = hidden ? 'none' : 'block';
+  }
+  setHidden(true);
   document.documentElement.appendChild(host);
 
   let current = null;
@@ -74,7 +130,8 @@ export function createPopup({ document, onAdd, onSpeak, onClose }) {
   function render(state) {
     current = state;
     wrap.classList.remove('show');
-    wrap.replaceChildren();
+    // `replaceChildren` would drop the close button, so re-seat it each time.
+    wrap.replaceChildren(close);
 
     if (state.status === 'loading') {
       wrap.append(el('div', 'term', state.term), el('div', 'translation hint', '翻译中…'));
@@ -134,7 +191,7 @@ export function createPopup({ document, onAdd, onSpeak, onClose }) {
       if (!state.canSave) actions.append(el('span', 'hint', '过长,仅可查看'));
       wrap.append(actions);
     }
-    host.hidden = false;
+    setHidden(false);
     // Force a frame so the transition runs on first paint.
     host.getBoundingClientRect();
     wrap.classList.add('show');
@@ -142,23 +199,35 @@ export function createPopup({ document, onAdd, onSpeak, onClose }) {
   }
 
   function place(anchor) {
-    const margin = 10;
-    const rect = anchor ?? { top: 20, bottom: 40, left: 20, right: 20 };
+    /*
+     * Selection rects and `position: fixed` share the layout viewport's
+     * coordinate space. The visual viewport's size is the honest bound on a
+     * phone, where the on-screen keyboard shrinks what is visible while
+     * `innerHeight` stays put; its offsets mark the part scrolled off when the
+     * page is pinch-zoomed. Fall back to the window when it is unavailable.
+     */
+    const viewport = window.visualViewport;
+    const viewportBox = {
+      width: Math.min(window.innerWidth || Infinity, viewport?.width ?? Infinity),
+      height: Math.min(window.innerHeight || Infinity, viewport?.height ?? Infinity),
+    };
+    const offsetTop = viewport?.offsetTop ?? 0;
+    const offsetLeft = viewport?.offsetLeft ?? 0;
+
+    const rect = anchor ?? { top: offsetTop + 20, height: 20, left: offsetLeft + 20 };
     const box = wrap.getBoundingClientRect();
-    let top = rect.bottom + 8;
-    if (top + box.height > window.innerHeight - margin) {
-      top = Math.max(margin, rect.top - box.height - 8);
-    }
-    let left = rect.left;
-    if (left + box.width > window.innerWidth - margin) {
-      left = Math.max(margin, window.innerWidth - box.width - margin);
-    }
+    const { top, left } = placeNear({
+      rect,
+      box: { width: box.width, height: box.height },
+      viewport: viewportBox,
+      margin: touch ? 8 : 10,
+    });
     Object.assign(wrap.style, { top: `${top}px`, left: `${left}px` });
   }
 
   function hide() {
     if (host.hidden) return;
-    host.hidden = true;
+    setHidden(true);
     wrap.classList.remove('show');
     current = null;
     onClose?.();
