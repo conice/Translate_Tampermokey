@@ -8,14 +8,37 @@ import {
 } from '../core/gloss.js';
 
 const STYLE_ID = 'tm-gloss-style';
+/*
+ * The gloss lives inside the host page's prose, so it must not fight it:
+ *
+ *   - `color: currentColor` rather than a fixed grey. A grey that reads on a
+ *     white article vanishes on a dark theme and on a coloured heading; the
+ *     colour of the text around it is legible wherever that text is.
+ *   - The colour is then dimmed, so the gloss stays secondary. `opacity` is the
+ *     fallback every engine has; `color-mix` is the upgrade, because a real
+ *     translucent colour leaves the parentheses at the same weight instead of
+ *     multiplying the whole element's alpha.
+ *   - Every property that decides how the gloss looks or behaves is marked
+ *     `!important`. This stylesheet shares an origin and a cascade with the
+ *     page's own CSS, so without it a single `article span { ... }` rule would
+ *     take the gloss back.
+ */
 const STYLE_TEXT = `
 .${ANNOTATION_CLASS} {
-  font-size: 0.78em;
-  color: #6b7280;
-  margin-left: 0.18em;
-  white-space: nowrap;
-  user-select: none;
-  cursor: help;
+  font-size: 0.78em !important;
+  color: currentColor !important;
+  opacity: 0.62 !important;
+  margin-left: 0.18em !important;
+  margin-right: 0.12em !important;
+  white-space: nowrap !important;
+  user-select: none !important;
+  cursor: help !important;
+}
+@supports (color: color-mix(in srgb, currentColor 62%, transparent)) {
+  .${ANNOTATION_CLASS} {
+    color: color-mix(in srgb, currentColor 62%, transparent) !important;
+    opacity: 1 !important;
+  }
 }
 .${ANNOTATION_CLASS}::before { content: "("; }
 .${ANNOTATION_CLASS}::after { content: ")"; }
@@ -162,11 +185,11 @@ export function createGlossLayer({ document, window, translationMap }) {
     active = true;
     ensureStyle();
     pass();
-    observer = new IntersectionObserver(() => schedule(), { rootMargin: '300px' });
+    observer = new window.IntersectionObserver(() => schedule(), { rootMargin: '300px' });
     for (const element of document.querySelectorAll('p, li, td, article, section')) {
       observer.observe(element);
     }
-    mutationObserver = new MutationObserver((records) => {
+    mutationObserver = new window.MutationObserver((records) => {
       if (suppressed) return;
       for (const record of records) {
         if (record.type === 'childList' && record.addedNodes.length > 0) {

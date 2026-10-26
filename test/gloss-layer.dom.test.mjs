@@ -34,6 +34,20 @@ function makeLayer(window, document, map) {
   return createGlossLayer({ document, window, translationMap: map });
 }
 
+/** Every `prop: value;` pair in a stylesheet, including ones inside at-rules. */
+function declarations(css) {
+  return [...css.matchAll(/([-a-z]+)\s*:\s*([^;{}]+);/g)].map(([, prop, value]) => ({
+    prop,
+    value: value.trim(),
+  }));
+}
+
+function glossCss(document) {
+  const style = document.getElementById('tm-gloss-style');
+  assert.ok(style, 'the gloss stylesheet should be injected');
+  return style.textContent;
+}
+
 test('gloss layer annotates a matching word with its translation', () => {
   const { window, document } = setup('<p>I run every day</p>');
   const layer = makeLayer(window, document, new Map([['run', '跑']]));
@@ -162,4 +176,57 @@ test('a page-wide wrapper does not defeat the viewport filter', () => {
   layer.pass({ force: true });
   assert.equal(document.querySelectorAll('.tm-gloss-annot').length, 0);
   window.Element.prototype.getBoundingClientRect = realRect;
+});
+
+test('the gloss stylesheet outranks the page on every property that matters', () => {
+  const { window, document } = setup('<p>I run every day</p>');
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.pass({ force: true });
+
+  const css = glossCss(document);
+  const guarded = ['font-size', 'color', 'margin-left', 'margin-right', 'white-space', 'user-select', 'cursor'];
+  for (const prop of guarded) {
+    const found = declarations(css).filter((decl) => decl.prop === prop);
+    assert.ok(found.length > 0, `the gloss style should set ${prop}`);
+    for (const decl of found) {
+      assert.match(
+        decl.value,
+        /!important$/u,
+        `${prop} must be !important, or a site stylesheet can flatten the gloss`,
+      );
+    }
+  }
+
+  // The elements carry these class names, so renaming either rule would silently
+  // stop styling the annotation.
+  assert.match(css, new RegExp(`\\.${ANNOTATION_CLASS}\\b`));
+});
+
+test('the gloss takes its colour from the text it sits in, and dims it', () => {
+  const { window, document } = setup('<p>I run every day</p>');
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.pass({ force: true });
+
+  const css = glossCss(document);
+  // A fixed grey disappears on dark prose and on coloured headings; currentColor
+  // is readable wherever the page itself is.
+  assert.match(css, /color:\s*currentColor\s*!important/u, 'the base rule follows the host colour');
+  assert.match(css, /opacity:\s*0?\.\d+\s*!important/u, 'and dims it, so the gloss does not shout');
+  // Browsers without colour mixing still need a working rule; those with it get
+  // a real translucent colour instead of a whole-element opacity.
+  assert.match(css, /@supports[^{]*color-mix/u, 'the sibling colour has a progressive enhancement');
+  assert.match(css, /color-mix\(in srgb,\s*currentColor/u);
+});
+
+test('the gloss stylesheet is injected once, however often the layer runs', () => {
+  const { window, document } = setup('<p>I run every day</p>');
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.pass({ force: true });
+  layer.pass({ force: true });
+  layer.refresh(new Map([['run', '奔跑']]), { force: true });
+  layer.start();
+  layer.pass();
+  layer.stop();
+
+  assert.equal(document.querySelectorAll('#tm-gloss-style').length, 1);
 });
