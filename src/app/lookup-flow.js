@@ -37,7 +37,7 @@ export function sourceLangOf(term) {
  * @param {object} deps.book            Vocabulary Book
  * @param {Function} [deps.pageLanguage]  () => Page Language code
  * @param {Function} [deps.dictionary]    (word) => {phonetic, meanings} | undefined
- * @param {Function} [deps.speak]         (term, lang) => void
+ * @param {Function} [deps.speak]         (term, lang, audioUrl) => void
  * @param {Function} deps.settings        () => settings snapshot
  * @param {string} deps.host              current hostname
  */
@@ -136,6 +136,7 @@ export function createLookupFlow({
         translation: entry.translation,
         detectedSource,
         phonetic: details?.phonetic,
+        audio: details?.audio,
         meanings: details?.meanings,
         canSpeak: Boolean(speak),
         canSave,

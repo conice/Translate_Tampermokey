@@ -117,6 +117,26 @@ export const mymemory = {
 };
 
 /**
+ * Pick one pronunciation recording from a dictionary's `phonetics` list.
+ *
+ * A word can carry several regions at once and the list order is not
+ * meaningful, so an American recording is preferred by name rather than by
+ * position; British is the fallback, then whatever else exists. A
+ * protocol-relative URL is resolved to https so it can be requested directly.
+ */
+export function chooseAudio(phonetics) {
+  const recorded = (Array.isArray(phonetics) ? phonetics : [])
+    .map((entry) => entry?.audio)
+    .filter((url) => typeof url === 'string' && url.length > 0);
+  if (recorded.length === 0) return undefined;
+  const preferred =
+    recorded.find((url) => /[-_]us\./iu.test(url)) ??
+    recorded.find((url) => /[-_]uk\./iu.test(url)) ??
+    recorded[0];
+  return preferred.startsWith('//') ? `https:${preferred}` : preferred;
+}
+
+/**
  * English dictionary: IPA, audio, part of speech, first definition.
  * Lookup only, so it never participates in the failover chain; it is fetched
  * in parallel with the translation and its absence is not an error.
@@ -136,7 +156,7 @@ export const dictionaryDev = {
     if (!Array.isArray(data) || data.length === 0) return undefined;
     const entry = data[0];
     const phonetic = entry.phonetics?.find((p) => p.text)?.text;
-    const audio = entry.phonetics?.find((p) => p.audio)?.audio;
+    const audio = chooseAudio(entry.phonetics);
     const meanings = [];
     for (const meaning of entry.meanings ?? []) {
       const definition = meaning.definitions?.[0]?.definition;

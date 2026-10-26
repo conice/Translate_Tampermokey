@@ -150,7 +150,7 @@ export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }
       if (state.canSpeak) {
         const speak = el('button', 'speak', '🔊');
         speak.title = '发音';
-        speak.onclick = () => onSpeak?.(state.term, state.sourceLang);
+        speak.onclick = () => onSpeak?.(state.term, state.sourceLang, state.audio);
         head.append(speak);
       }
       wrap.append(head);

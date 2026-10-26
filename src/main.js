@@ -8,6 +8,7 @@ import { pageLanguage, resolveTarget } from './core/lang.js';
 import { dictionaryDev, freedictionary, createTranslator } from './core/providers.js';
 import { createSettings, createBook, createLookupCache, createGmStorage } from './app/storage.js';
 import { createLookupFlow, addEntry } from './app/lookup-flow.js';
+import { createPronouncer } from './app/pronunciation.js';
 import { createPopup } from './ui/popup.js';
 import { createBubble } from './ui/bubble.js';
 import { createGlossLayer } from './ui/gloss-layer.js';
@@ -35,8 +36,14 @@ const host = location.hostname;
  */
 const touchPrimary = isTouchPrimary(window);
 
-/** Userscript-manager-native HTTP, which bypasses page CSP and CORS. */
-function fetchText(url) {
+/**
+ * Userscript-manager-native HTTP, which bypasses page CSP and CORS.
+ *
+ * One bridge with a `binary` switch rather than two near-identical functions:
+ * the timeout, the status check and the error mapping must stay the same for
+ * translations, dictionary entries and pronunciation recordings alike.
+ */
+function request(url, { binary = false } = {}) {
   return new Promise((resolve, reject) => {
     if (typeof GM_xmlhttpRequest !== 'function') {
       reject(new Error('GM_xmlhttpRequest unavailable'));
@@ -46,15 +53,23 @@ function fetchText(url) {
       method: 'GET',
       url,
       timeout: 12000,
+      ...(binary ? { responseType: 'blob' } : {}),
       onload(response) {
-        if (response.status >= 200 && response.status < 300) resolve(response.responseText);
-        else reject(new Error(`HTTP ${response.status}`));
+        if (response.status >= 200 && response.status < 300) {
+          resolve(binary ? response.response : response.responseText);
+        } else {
+          reject(new Error(`HTTP ${response.status}`));
+        }
       },
       onerror: () => reject(new Error('network error')),
       ontimeout: () => reject(new Error('timeout')),
     });
   });
 }
+
+const fetchText = (url) => request(url);
+/** A pronunciation recording, as bytes: the text-shaped call cannot carry it. */
+const fetchBlob = (url) => request(url, { binary: true });
 
 const settings = createSettings(createGmStorage('settings', gm));
 const book = createBook(gm);
@@ -153,7 +168,7 @@ const popup = createPopup({
     if (!entry) return;
     addEntry(book, entry, () => refreshGlosses());
   },
-  onSpeak: (term, lang) => speak(term, lang),
+  onSpeak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
   onClose: () => {},
 });
 
@@ -242,12 +257,13 @@ const flow = createLookupFlow({
   book,
   pageLanguage: detectPageLang,
   dictionary,
-  speak,
+  speak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
   settings: () => settings,
   host,
 });
 
-function speak(term, lang) {
+/** The system voice, used when there is no recording or it could not play. */
+function speakText(term, lang) {
   try {
     const utterance = new SpeechSynthesisUtterance(term);
     if (lang && lang !== 'auto') utterance.lang = lang;
@@ -257,6 +273,17 @@ function speak(term, lang) {
     /* speech synthesis is optional */
   }
 }
+
+/** Pronunciation, with the browser's four audio effects supplied here. */
+const pronouncer = createPronouncer({
+  fetchBlob,
+  createAudio: (url) => new Audio(url),
+  objectUrls: {
+    create: (blob) => URL.createObjectURL(blob),
+    revoke: (url) => URL.revokeObjectURL(url),
+  },
+  speakText,
+});
 
 /** Anchor rect for the Popup; Range.getBoundingClientRect is missing in some engines. */
 function anchorOf(range) {

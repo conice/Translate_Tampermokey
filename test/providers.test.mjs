@@ -5,6 +5,7 @@ import {
   lingva,
   mymemory,
   dictionaryDev,
+  chooseAudio,
   freedictionary,
   createTranslator,
   ProviderError,
@@ -222,4 +223,38 @@ test('freedictionary returns nothing for a base form or a non-dictionary body', 
   // hand to a for-of loop and throw on.
   assert.equal(freedictionary.parseLemma('[]'), undefined);
   assert.equal(freedictionary.parseLemma('null'), undefined);
+});
+
+test('chooseAudio prefers the American recording, then British, then any other', () => {
+  const us = 'https://api.dictionaryapi.dev/media/pronunciations/en/run-us.mp3';
+  const uk = 'https://api.dictionaryapi.dev/media/pronunciations/en/run-uk.mp3';
+  const au = 'https://api.dictionaryapi.dev/media/pronunciations/en/run-au.mp3';
+
+  assert.equal(chooseAudio([{ audio: us }, { audio: uk }, { audio: au }]), us);
+  assert.equal(chooseAudio([{ audio: au }, { audio: uk }]), uk);
+  assert.equal(chooseAudio([{ audio: au }]), au);
+});
+
+test('chooseAudio picks the accent by file name, not by position in the list', () => {
+  const us = 'https://api.dictionaryapi.dev/media/pronunciations/en/run-us.mp3';
+  const uk = 'https://api.dictionaryapi.dev/media/pronunciations/en/run-uk.mp3';
+
+  // The live API lists run-au before run-us, so position alone would take the
+  // wrong accent.
+  assert.equal(chooseAudio([{ audio: uk }, { audio: us }]), us);
+  assert.equal(chooseAudio([{ audio: us }]), us);
+  assert.equal(chooseAudio([{ audio: uk }]), uk);
+});
+
+test('chooseAudio returns nothing when no recording exists', () => {
+  assert.equal(chooseAudio([{ text: '/ɹʌn/', audio: '' }, { text: '/ɹʊn/' }]), undefined);
+  assert.equal(chooseAudio([]), undefined);
+  assert.equal(chooseAudio(undefined), undefined);
+});
+
+test('chooseAudio resolves a protocol-relative recording URL to https', () => {
+  assert.equal(
+    chooseAudio([{ audio: '//api.dictionaryapi.dev/media/x-us.mp3' }]),
+    'https://api.dictionaryapi.dev/media/x-us.mp3',
+  );
 });

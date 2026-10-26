@@ -34,7 +34,7 @@ function build() {
 }
 
 /** A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP. */
-function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false }) {
+function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false, playFails = false }) {
   const dom = new JSDOM(`<!doctype html><html lang="en"><body>${html}</body></html>`, {
     url,
     pretendToBeVisual: true,
@@ -46,6 +46,9 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
   if (entries) store.entries = JSON.stringify(entries);
 
   const requests = [];
+  // Requests that asked for binary bytes: a recording must not be fetched as
+  // text, or the blob URL would hold a JSON/UTF-8 re-encoding of the media.
+  const downloads = [];
   const menu = [];
   // jsdom has no media-event plumbing: the dark-mode watcher's listeners are
   // kept here so a test can flip the OS preference mid-page.
@@ -89,6 +92,45 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
     height: 20,
   });
   window.requestIdleCallback = (fn) => window.setTimeout(fn, 0);
+
+  /*
+   * jsdom has no media stack: no `Audio`, no object URLs, no speech synthesis.
+   * The three are recorded here so a test can tell a recording apart from the
+   * system voice without reaching into the script.
+   */
+  const audio = { played: [], instances: [], revoked: 0, spoken: [] };
+  window.Audio = class {
+    constructor(src) {
+      this.src = src;
+      this.paused = false;
+      this.ended = false;
+      audio.instances.push(this);
+    }
+    play() {
+      if (playFails) return Promise.reject(new Error('cannot decode'));
+      audio.played.push(this.src);
+      return Promise.resolve();
+    }
+    pause() {
+      this.paused = true;
+    }
+  };
+  window.URL.createObjectURL = () => `blob:mock/${audio.played.length + audio.instances.length}`;
+  window.URL.revokeObjectURL = () => {
+    audio.revoked += 1;
+  };
+  window.SpeechSynthesisUtterance = class {
+    constructor(text) {
+      this.text = text;
+    }
+  };
+  window.speechSynthesis = {
+    cancel() {},
+    speak(utterance) {
+      audio.spoken.push(utterance.text);
+    },
+  };
+
   window.GM_getValue = (key, fallback) => (key in store ? store[key] : fallback);
   window.GM_setValue = (key, value) => {
     store[key] = value;
@@ -105,11 +147,17 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
       return;
     }
     const [, [status, body]] = respond;
-    options.onload?.({ status, responseText: typeof body === 'string' ? body : JSON.stringify(body) });
+    const isBlob = options.responseType === 'blob';
+    if (isBlob) downloads.push(options.url);
+    options.onload?.({
+      status,
+      responseText: isBlob ? '' : typeof body === 'string' ? body : JSON.stringify(body),
+      response: isBlob ? body : undefined,
+    });
   };
 
   window.eval(build());
-  return { window, document: window.document, store, requests, menu, dom, setPrefersDark };
+  return { window, document: window.document, store, requests, downloads, menu, dom, setPrefersDark, audio };
 }
 
 function selectAndDoubleClick(window, element, start, end) {
@@ -597,4 +645,135 @@ test('every surface paints from the shared theme variables', () => {
       );
     }
   }
+});
+
+const RECORDING = 'https://api.dictionaryapi.dev/media/pronunciations/en/run-us.mp3';
+
+/** A dictionary body that offers a pronunciation recording. */
+function dictionaryWithAudio(audioUrl = RECORDING) {
+  return [
+    {
+      word: 'run',
+      phonetics: [{ text: '/ɹʌn/', audio: audioUrl }],
+      meanings: [{ partOfSpeech: 'verb', definitions: [{ definition: 'To move rapidly on foot.' }] }],
+    },
+  ];
+}
+
+/** Boot a page, answer one lookup, and leave its Popup open. */
+async function openPopupWithDictionary(dictionaryBody, { recording = [200, { bytes: true }], playFails = false } = {}) {
+  const ctx = boot({
+    html: '<p id="t">I run every day.</p>',
+    responses: {
+      clients5: [200, [['跑', 'en']]],
+      'dictionaryapi.dev/api/v2/entries/en/run': [200, dictionaryBody],
+      freedictionaryapi: [200, { entries: [] }],
+      pronunciations: recording,
+    },
+    playFails,
+  });
+  selectAndDoubleClick(ctx.window, ctx.document.getElementById('t'), 2, 5);
+  return ctx;
+}
+
+async function speakButton(document) {
+  const popup = document.querySelector('[data-tm=popup-host]');
+  await until(() => popupText(document).includes('加入生词本'));
+  return popup.shadowRoot.querySelector('button.speak');
+}
+
+test('the speak button plays the dictionary recording when one exists', async () => {
+  const { document, requests, downloads, audio } = await openPopupWithDictionary(dictionaryWithAudio());
+
+  const button = await speakButton(document);
+  assert.ok(button, 'the popup needs a speak button');
+  button.click();
+  assert.ok(await until(() => audio.played.length > 0), 'a recording should start playing');
+
+  assert.ok(
+    requests.some((url) => url === RECORDING),
+    'the recording must be downloaded through the userscript HTTP bridge',
+  );
+  assert.deepEqual(downloads, [RECORDING], 'audio is bytes, so the request must ask for a blob');
+  assert.equal(audio.spoken.length, 0, 'a real recording must not also fire the system voice');
+});
+
+test('without a recording the speak button uses the system voice', async () => {
+  const { document, requests, audio } = await openPopupWithDictionary([
+    { word: 'run', phonetics: [{ text: '/ɹʌn/', audio: '' }], meanings: [] },
+  ]);
+
+  const button = await speakButton(document);
+  button.click();
+  await until(() => audio.spoken.length > 0);
+
+  assert.deepEqual(audio.spoken, ['run']);
+  assert.equal(
+    requests.some((url) => url.includes('pronunciations')),
+    false,
+    'no recording means no download attempt',
+  );
+});
+
+test('a second tap on the speak button stops the recording', async () => {
+  const { document, audio } = await openPopupWithDictionary(dictionaryWithAudio());
+
+  const button = await speakButton(document);
+  button.click();
+  await until(() => audio.instances.length === 1);
+  assert.equal(audio.instances[0].paused, false);
+
+  button.click();
+  assert.ok(await until(() => audio.instances[0].paused === true), 'the second tap should stop playback');
+  assert.equal(audio.revoked, 1, 'the temporary audio URL must be released');
+});
+
+test('a failed download falls back to the system voice', async () => {
+  const { document, audio } = await openPopupWithDictionary(
+    dictionaryWithAudio('https://api.dictionaryapi.dev/media/pronunciations/en/missing-us.mp3'),
+    { recording: [404, ''] },
+  );
+
+  const button = await speakButton(document);
+  button.click();
+  assert.ok(await until(() => audio.spoken.length > 0), 'a missing recording must not silence the word');
+  assert.deepEqual(audio.spoken, ['run']);
+  assert.equal(audio.revoked, 0, 'no blob was ever created, so there is nothing to release');
+});
+
+test('a recording the browser cannot play falls back to the system voice', async () => {
+  const { document, audio } = await openPopupWithDictionary(dictionaryWithAudio(), { playFails: true });
+
+  const button = await speakButton(document);
+  button.click();
+  assert.ok(await until(() => audio.spoken.length > 0), 'a failed playback must not silence the word');
+  assert.deepEqual(audio.spoken, ['run']);
+  assert.equal(audio.revoked, 1, 'the blob URL made for the failed recording must be released');
+});
+
+test('finishing a recording releases the temporary audio URL', async () => {
+  const { document, audio } = await openPopupWithDictionary(dictionaryWithAudio());
+
+  const button = await speakButton(document);
+  button.click();
+  await until(() => audio.instances.length === 1);
+
+  audio.instances[0].onended();
+  assert.equal(audio.revoked, 1, 'an object URL outlives the blob only as long as the sound does');
+});
+
+test('the entry saved from a lookup carries no audio field', async () => {
+  const { document, store } = await openPopupWithDictionary(dictionaryWithAudio());
+  const add = await until(() => {
+    const popup = document.querySelector('[data-tm=popup-host]');
+    const button = popup.shadowRoot.querySelector('button.primary');
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  });
+  assert.ok(add, 'the entry should be savable');
+  await until(() => Boolean(store.entries));
+
+  const [entry] = JSON.parse(store.entries);
+  assert.equal('audio' in entry, false, 'the recording URL is not part of an Entry');
 });
