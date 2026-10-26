@@ -22,7 +22,13 @@ const STYLE = `
 }
 .dialog {
   width: min(720px, calc(100vw - 32px));
+  /* vh is the *large* viewport: on a phone it stays the height of the window
+     even while the browser chrome is showing. A book long enough to reach the
+     cap would then be taller than the screen, and centring a too-tall box would
+     put the title under the status bar and the last rows under the toolbar.
+     dvh shrinks with the chrome; the vh line is the fallback. */
   max-height: min(640px, calc(100vh - 48px));
+  max-height: min(640px, calc(100dvh - 48px));
   background: var(--tm-bg, #fff); border-radius: 14px; overflow: hidden;
   display: flex; flex-direction: column;
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
@@ -39,13 +45,28 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
 }
 .tabs button[aria-selected="true"] { background: var(--tm-hover, #eef2ff); color: var(--tm-accent, #1d4ed8); }
 .close { all: unset; cursor: pointer; color: var(--tm-muted, #888); padding: 4px 8px; font-size: 18px; }
-.body { padding: 14px 18px; overflow: auto; }
+.body {
+  /* The list scrolls here, never in the dialog. A flex item refuses to shrink
+     below its content unless min-height is zeroed, so without this a long book
+     would overflow the cap above: the rows past the edge would simply be cut
+     off with no way to scroll to them. */
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain;
+  padding: 0;
+}
+.toolbar {
+  /* The search box outlives the scroll. With a few hundred entries, scrolling
+     back to the top to filter again is otherwise the only way to find a word. */
+  position: sticky; top: 0; z-index: 1;
+  padding: 14px 18px 10px;
+  background: var(--tm-bg, #fff);
+}
 .search {
-  width: 100%; box-sizing: border-box; padding: 8px 10px; margin-bottom: 10px;
+  width: 100%; box-sizing: border-box; padding: 8px 10px;
   border: 1px solid var(--tm-border, #ddd); border-radius: 8px; font: inherit;
   background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
-ul.entries { list-style: none; margin: 0; padding: 0; }
+ul.entries { list-style: none; margin: 0; padding: 0 18px; }
 ul.entries li {
   display: flex; gap: 10px; align-items: baseline;
   padding: 8px 0; border-bottom: 1px solid var(--tm-border, #f2f2f2);
@@ -70,7 +91,8 @@ textarea {
   font-size: 12px; border: 1px solid var(--tm-border, #ddd); border-radius: 8px; padding: 8px;
   background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
-.empty { color: var(--tm-muted, #999); padding: 24px 0; text-align: center; }
+.empty { color: var(--tm-muted, #999); padding: 24px 18px; text-align: center; }
+.settings { padding: 14px 18px; }
 .status { font-size: 12px; color: var(--tm-muted, #555); }
 
 /* Finger-sized hit areas; the desktop sizes assume a mouse. */
@@ -80,8 +102,11 @@ textarea {
   button.small, button.danger { padding: 9px 12px; font-size: 13px; }
   ul.entries li { padding: 11px 0; }
   .search, textarea { font-size: 16px; } /* below 16px iOS zooms the page on focus */
-  .dialog { width: calc(100vw - 16px); max-height: calc(100vh - 24px); }
-  .body { padding: 12px 14px; }
+  .dialog { width: calc(100vw - 16px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
+  .toolbar { padding: 12px 14px 10px; }
+  ul.entries { padding: 0 14px; }
+  .empty { padding: 24px 14px; }
+  .settings { padding: 12px 14px; }
 }
 `;
 
@@ -167,20 +192,32 @@ export function createPanel({
   }
 
   function renderBook() {
-    const wrap = document.createElement('div');
+    /*
+     * The search sits in its own sticky row above the list rather than inside
+     * the scroll area, so a book with hundreds of entries can still be
+     * filtered without scrolling back to the top first.
+     */
+    const toolbar = document.createElement('div');
+    toolbar.className = 'toolbar';
     const search = document.createElement('input');
     search.className = 'search';
     search.placeholder = '搜索单词或译文…';
     search.value = filter;
+    toolbar.append(search);
+
+    let listed = buildList();
+    // Only the list is rebuilt on input: replacing the input too would take
+    // the caret and the on-screen keyboard's composition with it.
     search.oninput = () => {
       filter = search.value;
-      const list = wrap.querySelector('ul.entries');
-      list?.replaceWith(buildList());
-      const empty = wrap.querySelector('.empty');
-      if (empty) empty.replaceWith(buildList());
+      const next = buildList();
+      listed.replaceWith(next);
+      listed = next;
     };
-    wrap.append(search, buildList());
-    return wrap;
+
+    const fragment = document.createDocumentFragment();
+    fragment.append(toolbar, listed);
+    return fragment;
   }
 
   function buildList() {
@@ -235,6 +272,7 @@ export function createPanel({
 
   function renderSettings() {
     const wrap = document.createElement('div');
+    wrap.className = 'settings';
 
     const lookupRow = document.createElement('div');
     lookupRow.className = 'row';
