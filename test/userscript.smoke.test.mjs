@@ -330,14 +330,91 @@ test('a collapsed selection on touch hides the bubble and looks nothing up', asy
   assert.equal(requests.length, 0);
 });
 
-test('scrolling takes the bubble away, since it would otherwise point at the wrong words', async () => {
+test('the bubble measures 44px, the smallest target a finger hits', async () => {
   const { window, document } = boot({ html: '<p id="t">I run every day.</p>', touch: true });
   touchSelect(window, document.getElementById('t'), 2, 5);
   const host = bubbleHost(document);
   assert.ok(await until(() => host.hidden === false));
 
+  const bubble = host.shadowRoot.querySelector('.bubble');
+  const style = window.getComputedStyle(bubble);
+  assert.equal(style.width, '44px');
+  assert.equal(style.height, '44px');
+  assert.equal(style.borderRadius, '50%', 'a round button stays round when it grows');
+});
+
+/** jsdom has no layout: give the Selection a rect the test can move. */
+function stubSelectionRect(window, rect) {
+  const current = { ...rect };
+  window.Range.prototype.getBoundingClientRect = () => ({ ...current });
+  window.Range.prototype.getClientRects = () => [{ ...current }];
+  return current;
+}
+
+test('scrolling moves the bubble with its selection instead of hiding it', async () => {
+  const { window, document } = boot({ html: '<p id="t">I run every day.</p>', touch: true });
+  const rect = stubSelectionRect(window, { top: 100, bottom: 120, left: 40, right: 60, width: 20, height: 20 });
+
+  touchSelect(window, document.getElementById('t'), 2, 5);
+  const host = bubbleHost(document);
+  assert.ok(await until(() => host.hidden === false));
+  const bubble = host.shadowRoot.querySelector('.bubble');
+  const before = { top: bubble.style.top, left: bubble.style.left };
+
+  rect.top = 300;
+  rect.bottom = 320;
   window.dispatchEvent(new window.Event('scroll'));
-  assert.equal(host.hidden, true);
+  assert.ok(await until(() => bubble.style.top !== before.top), 'the bubble should follow the selection');
+
+  assert.equal(host.hidden, false, 'a still-visible selection keeps its bubble');
+  assert.equal(bubble.style.left, before.left, 'only the axis that moved changes');
+});
+
+test('scrolling the selection off the screen hides the bubble', async () => {
+  const { window, document } = boot({ html: '<p id="t">I run every day.</p>', touch: true });
+  const rect = stubSelectionRect(window, { top: 100, bottom: 120, left: 40, right: 60, width: 20, height: 20 });
+
+  touchSelect(window, document.getElementById('t'), 2, 5);
+  const host = bubbleHost(document);
+  assert.ok(await until(() => host.hidden === false));
+
+  rect.top = -400;
+  rect.bottom = -380;
+  window.dispatchEvent(new window.Event('scroll'));
+  assert.ok(await until(() => host.hidden === true), 'a selection nobody can see needs no bubble');
+});
+
+test('scrolling on touch closes the popup, since it would point at the wrong words', async () => {
+  const { window, document } = boot({
+    html: '<p id="t">I run every day.</p>',
+    responses: { clients5: [200, [['跑', 'en']]] },
+    touch: true,
+  });
+  touchSelect(window, document.getElementById('t'), 2, 5);
+  await until(() => bubbleHost(document).hidden === false);
+  bubbleHost(document).shadowRoot.querySelector('.bubble').click();
+  await until(() => /跑/.test(popupText(document)));
+
+  window.dispatchEvent(new window.Event('scroll'));
+  assert.equal(document.querySelector('[data-tm=popup-host]').hidden, true);
+});
+
+test('scrolling on desktop leaves the popup open and where it was', async () => {
+  const { window, document } = boot({
+    html: '<p id="t">I run every day.</p>',
+    responses: { clients5: [200, [['跑', 'en']]] },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+  await until(() => /跑/.test(popupText(document)));
+
+  const host = document.querySelector('[data-tm=popup-host]');
+  const wrap = host.shadowRoot.querySelector('.wrap');
+  const before = { top: wrap.style.top, left: wrap.style.left };
+  window.dispatchEvent(new window.Event('scroll'));
+
+  assert.equal(host.hidden, false, 'a deliberately opened popup survives a scroll');
+  assert.equal(wrap.style.top, before.top);
+  assert.equal(wrap.style.left, before.left);
 });
 
 test('one tap on the bubble starts exactly one lookup', async () => {
@@ -364,14 +441,18 @@ test('one tap on the bubble starts exactly one lookup', async () => {
   assert.equal(requests.length, 3, `translation + two dictionary calls, got ${requests.length}`);
 });
 
-test('a multi-line selection on touch offers no bubble', async () => {
+test('a selection that wraps across lines on touch still offers a bubble', async () => {
   const { window, document } = boot({
     html: '<p id="t">line one\nline two</p>',
+    responses: { clients5: [200, [['第一行\n第二行', 'en']]] },
     touch: true,
   });
   touchSelect(window, document.getElementById('t'), 0, 17);
-  await wait(300);
-  assert.equal(bubbleHost(document).hidden, true);
+  const host = bubbleHost(document);
+  assert.ok(await until(() => host.hidden === false), 'a drag across lines is still a lookup');
+
+  host.shadowRoot.querySelector('.bubble').click();
+  assert.ok(await until(() => popupText(document).includes('第一行')));
 });
 
 test('touch popup uses the compact layout with a close button', async () => {

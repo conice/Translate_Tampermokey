@@ -10,6 +10,15 @@
  */
 import { placeNear } from '../core/gesture.js';
 
+/**
+ * The Bubble's side, in CSS pixels.
+ *
+ * 44 is the smallest target a finger hits reliably (and what the touch Popup's
+ * buttons use), so it is written once and interpolated into the stylesheet and
+ * the placement maths rather than kept in two places.
+ */
+const BUBBLE_SIZE = 44;
+
 const STYLE = `
 :host { all: initial; }
 .bubble {
@@ -18,12 +27,12 @@ const STYLE = `
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 20px;
+  width: ${BUBBLE_SIZE}px;
+  height: ${BUBBLE_SIZE}px;
+  border-radius: 50%;
   background: var(--tm-accent, #2563eb);
   color: var(--tm-accent-fg, #fff);
-  font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+  font: 600 16px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
         "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   box-shadow: 0 4px 14px rgba(0,0,0,.28);
   opacity: 0;
@@ -123,8 +132,27 @@ export function createBubble({ document, window, onTap }) {
 
   function show(rect) {
     anchor = rect;
+    place();
+    setHidden(false);
+    button.classList.add('show');
+  }
+
+  /**
+   * Move the Bubble to follow its Selection while the page scrolls.
+   *
+   * The Bubble is `position: fixed`, so without this it would stay put over
+   * whatever text happened to scroll underneath it and point at the wrong
+   * words. A missing rect keeps the last known position: a transient layout
+   * gap is not a reason to jump.
+   */
+  function reposition(rect) {
+    if (host.hidden) return;
+    anchor = rect ?? anchor;
+    place();
+  }
+
+  function place() {
     const viewport = window.visualViewport;
-    const size = 40;
     const margin = 8;
 
     /*
@@ -140,23 +168,21 @@ export function createBubble({ document, window, onTap }) {
     const offsetTop = viewport?.offsetTop ?? 0;
     const offsetLeft = viewport?.offsetLeft ?? 0;
     const fallback = { top: offsetTop + 24, height: 20, left: offsetLeft + 16, width: 0 };
-    const target = rect ?? fallback;
+    const target = anchor ?? fallback;
     const centred = {
       top: target.top,
       height: target.height ?? 20,
-      left: (target.left ?? 0) + Math.max(0, ((target.width ?? 0) - size) / 2),
+      left: (target.left ?? 0) + Math.max(0, ((target.width ?? 0) - BUBBLE_SIZE) / 2),
     };
     const { top, left } = placeNear({
       rect: centred,
-      box: { width: size, height: size },
+      box: { width: BUBBLE_SIZE, height: BUBBLE_SIZE },
       viewport: viewportBox,
       margin,
       gap: 10,
     });
 
     Object.assign(button.style, { top: `${top}px`, left: `${left}px` });
-    setHidden(false);
-    button.classList.add('show');
   }
 
   function hide() {
@@ -172,8 +198,12 @@ export function createBubble({ document, window, onTap }) {
 
   return {
     show,
+    reposition,
     hide,
     contains,
     host,
+    get visible() {
+      return !host.hidden;
+    },
   };
 }

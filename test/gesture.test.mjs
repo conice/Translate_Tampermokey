@@ -6,7 +6,9 @@ import {
   shouldOfferBubble,
   selectionTerm,
   isOwnSelection,
+  isRectVisible,
   placeNear,
+  MAX_BUBBLE_CHARS,
 } from '../src/core/gesture.js';
 
 function fakeSelection(text, { collapsed = false, rangeCount = 1 } = {}) {
@@ -48,9 +50,15 @@ test('an empty or collapsed selection offers nothing', () => {
   assert.equal(shouldOfferBubble({ selection: null }), false);
 });
 
-test('a multi-line or very long selection is treated as a copy gesture', () => {
-  assert.equal(shouldOfferBubble({ selection: fakeSelection('run\nand walk') }), false);
-  assert.equal(shouldOfferBubble({ selection: fakeSelection('run '.repeat(80)) }), false);
+test('a selection that wraps across lines still offers the bubble', () => {
+  assert.equal(shouldOfferBubble({ selection: fakeSelection('run\nand walk') }), true);
+  assert.equal(shouldOfferBubble({ selection: fakeSelection('One line.\nTwo lines.') }), true);
+});
+
+test('the bubble offers up to the same limit a Lookup accepts', () => {
+  assert.equal(MAX_BUBBLE_CHARS, 400, 'the bubble must not be narrower than a Lookup');
+  assert.equal(shouldOfferBubble({ selection: fakeSelection('a'.repeat(400)) }), true);
+  assert.equal(shouldOfferBubble({ selection: fakeSelection('a'.repeat(401)) }), false);
 });
 
 test('selections inside our own UI are ignored', () => {
@@ -85,9 +93,36 @@ test('selecting inside a text field or editor does not offer the bubble', () => 
   assert.equal(shouldOfferBubble({ selection: selectionIn('page') }), true);
 });
 
-test('selectionTerm normalizes the selection', () => {
-  assert.equal(selectionTerm(fakeSelection('  Running, ')), 'running');
+test('selectionTerm keeps the case and line breaks of what was selected', () => {
+  // A word is normalized again by the Lookup; a sentence must arrive as written
+  // or its translation comes back lowercased and flattened.
+  assert.equal(selectionTerm(fakeSelection('  Running, ')), 'Running,');
+  assert.equal(selectionTerm(fakeSelection('One line.\nTwo lines.')), 'One line.\nTwo lines.');
   assert.equal(selectionTerm(null), '');
+});
+
+test('isRectVisible is true while any part of the selection is on screen', () => {
+  const viewport = { width: 400, height: 800 };
+  assert.equal(isRectVisible({ top: 100, bottom: 120, left: 40, right: 60 }, viewport), true);
+  // Straddling an edge still counts: the reader can still see where it is.
+  assert.equal(isRectVisible({ top: -10, bottom: 10, left: 40, right: 60 }, viewport), true);
+  assert.equal(isRectVisible({ top: 790, bottom: 810, left: 40, right: 60 }, viewport), true);
+  assert.equal(isRectVisible({ top: 100, bottom: 120, left: -10, right: 10 }, viewport), true);
+});
+
+test('isRectVisible is false only once the selection has left the screen', () => {
+  const viewport = { width: 400, height: 800 };
+  assert.equal(isRectVisible({ top: -200, bottom: -180, left: 40, right: 60 }, viewport), false);
+  assert.equal(isRectVisible({ top: 900, bottom: 920, left: 40, right: 60 }, viewport), false);
+  assert.equal(isRectVisible({ top: 100, bottom: 120, left: -200, right: -180 }, viewport), false);
+  assert.equal(isRectVisible({ top: 100, bottom: 120, left: 500, right: 520 }, viewport), false);
+  assert.equal(isRectVisible(null, viewport), false);
+});
+
+test('isRectVisible accepts a rect that reports height instead of bottom', () => {
+  const viewport = { width: 400, height: 800 };
+  assert.equal(isRectVisible({ top: 100, height: 20, left: 40, right: 60 }, viewport), true);
+  assert.equal(isRectVisible({ top: -40, height: 20, left: 40, right: 60 }, viewport), false);
 });
 
 test('a selection inside our own shadow-rooted UI is recognised', () => {

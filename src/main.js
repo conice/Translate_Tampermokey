@@ -5,6 +5,7 @@
  * core/ (pure) or app/ (injected DOM), so this file is only glue.
  */
 import { pageLanguage, resolveTarget } from './core/lang.js';
+import { normalizeTerm } from './core/normalize.js';
 import { dictionaryDev, freedictionary, createTranslator } from './core/providers.js';
 import { createSettings, createBook, createLookupCache, createGmStorage } from './app/storage.js';
 import { createLookupFlow, addEntry } from './app/lookup-flow.js';
@@ -17,7 +18,7 @@ import { createGlossLayer } from './ui/gloss-layer.js';
 import { createPanel } from './ui/panel.js';
 import { applyPalette } from './ui/palette.js';
 import { resolveTheme } from './core/theme.js';
-import { isTouchPrimary, shouldOfferBubble, selectionTerm, isOwnSelection } from './core/gesture.js';
+import { isTouchPrimary, shouldOfferBubble, selectionTerm, isOwnSelection, isRectVisible } from './core/gesture.js';
 
 const gm = {
   getValue: (key, fallback) => (typeof GM_getValue === 'function' ? GM_getValue(key, fallback) : fallback),
@@ -198,7 +199,7 @@ const bubble = touchPrimary
         lookupTerm(term, rect);
       },
     })
-  : { show() {}, hide() {} };
+  : { show() {}, reposition() {}, hide() {} };
 
 const gloss = createGlossLayer({ document, window, translationMap: new Map() });
 
@@ -392,7 +393,8 @@ function evaluateSelection() {
   const text = selectionTerm(selection);
   // Some mobile browsers do fire dblclick (Chrome, when double-tap zoom is
   // off). The Popup already answering for this word makes the Bubble noise.
-  if (popup.current?.term === text) {
+  // The Popup holds a word's normalized form, so both spellings are compared.
+  if (popup.current && (popup.current.term === text || popup.current.term === normalizeTerm(text))) {
     bubble.hide();
     pendingSelection = null;
     return;
@@ -407,6 +409,59 @@ function evaluateSelection() {
 function onSelectionChange() {
   if (selectionTimer) clearTimeout(selectionTimer);
   selectionTimer = setTimeout(evaluateSelection, 250);
+}
+
+/**
+ * Scrolling moves the page under UI that is fixed to the screen.
+ *
+ * On touch, the Bubble follows its Selection and only goes away once the
+ * Selection has left the viewport entirely; the Popup closes, because it would
+ * otherwise float over words it no longer describes. On desktop the Popup was
+ * opened deliberately and stays exactly where it is -- a reader scrolling a
+ * long sentence wants to keep the translation beside it.
+ */
+let scrollFrame = false;
+
+function onScroll() {
+  if (!touchPrimary) return;
+  popup.hide();
+  if (!pendingSelection) {
+    bubble.hide();
+    return;
+  }
+  // A scroll fires far more often than the screen refreshes, and each frame
+  // costs a rect read, so the work is capped at one reposition per frame.
+  if (scrollFrame) return;
+  scrollFrame = true;
+  const nextFrame = window.requestAnimationFrame ?? ((fn) => window.setTimeout(fn, 16));
+  nextFrame(() => {
+    scrollFrame = false;
+    followSelection();
+  });
+}
+
+function followSelection() {
+  if (!pendingSelection) return;
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    bubble.hide();
+    return;
+  }
+  const rect = anchorOf(selection.getRangeAt(0));
+  if (!isRectVisible(rect, viewportBox())) {
+    bubble.hide();
+    return;
+  }
+  bubble.reposition(rect);
+}
+
+/** The visible part of the window, which on a phone is the visual viewport. */
+function viewportBox() {
+  const viewport = window.visualViewport;
+  return {
+    width: Math.min(window.innerWidth || Infinity, viewport?.width ?? Infinity),
+    height: Math.min(window.innerHeight || Infinity, viewport?.height ?? Infinity),
+  };
 }
 
 /** Where the finger went down, so a drag can be told apart from a tap. */
@@ -472,8 +527,9 @@ function start() {
     document.addEventListener('selectionchange', onSelectionChange, true);
     document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
     document.addEventListener('touchend', onTouchEnd, true);
-    // Scrolling changes where the Selection sits, so the Bubble would drift.
-    window.addEventListener('scroll', () => bubble.hide(), { capture: true, passive: true });
+    // Scrolling moves the Selection under the Bubble, which is fixed to the
+    // screen, so it follows rather than disappearing.
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
   }
 
   applyGlossSetting();

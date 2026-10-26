@@ -1,7 +1,13 @@
-import { normalizeTerm } from './normalize.js';
+import { normalizeTerm, normalizeSentence } from './normalize.js';
 
-/** Longest selection the bubble will offer to translate. */
-const MAX_BUBBLE_CHARS = 120;
+/**
+ * Longest selection the bubble will offer to translate.
+ *
+ * This is the Lookup limit, not an Entry limit: a phone user dragging out a
+ * sentence is doing what a desktop user does by double-clicking a paragraph,
+ * and a sentence is only ever translated. Anything longer is a copy gesture.
+ */
+export const MAX_BUBBLE_CHARS = 400;
 
 /**
  * True on devices whose primary input is a finger.
@@ -57,17 +63,37 @@ export function shouldOfferBubble({ selection, target, isOwnUi = false } = {}) {
   if (isEditableSelection(selection)) return false;
 
   const raw = String(selection.toString() ?? '');
-  if (raw.trim().length === 0) return false;
-  // A multi-line selection is a copy gesture, not a word lookup.
-  if (/\n/u.test(raw.trim())) return false;
-  if (raw.length > MAX_BUBBLE_CHARS) return false;
+  const text = normalizeSentence(raw);
+  if (text.length === 0) return false;
+  // A sentence may wrap across lines, and drag-selecting one is still a lookup;
+  // only a selection too long to be one is a copy gesture.
+  if (text.length > MAX_BUBBLE_CHARS) return false;
 
-  return normalizeTerm(raw).length > 0;
+  // Punctuation on its own is not something to translate.
+  return normalizeTerm(text).length > 0;
 }
 
-/** The text to look up from a selection, cleaned up. */
+/** The text to look up from a selection, tidied but not re-cased. */
 export function selectionTerm(selection) {
-  return normalizeTerm(selection?.toString?.() ?? '');
+  return normalizeSentence(selection?.toString?.() ?? '');
+}
+
+/**
+ * True while any part of the rect is inside the viewport.
+ *
+ * A Bubble is fixed on the screen, so it has to follow the Selection it points
+ * at. It only goes away once the Selection has left the screen entirely:
+ * straddling an edge means the reader can still see what it refers to.
+ */
+export function isRectVisible(rect, viewport) {
+  if (!rect) return false;
+  const top = rect.top ?? 0;
+  const bottom = rect.bottom ?? top + (rect.height ?? 0);
+  const left = rect.left ?? 0;
+  const right = rect.right ?? left + (rect.width ?? 0);
+  const width = viewport?.width ?? Infinity;
+  const height = viewport?.height ?? Infinity;
+  return bottom > 0 && top < height && right > 0 && left < width;
 }
 
 /**
