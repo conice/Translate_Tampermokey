@@ -230,3 +230,107 @@ test('the gloss stylesheet is injected once, however often the layer runs', () =
 
   assert.equal(document.querySelectorAll('#tm-gloss-style').length, 1);
 });
+
+/*
+ * Cleaning up is the dangerous half of this layer. The page's own text nodes
+ * are not ours to rearrange: a React or Vue view keeps a reference to the nodes
+ * it rendered, so merging text nodes across the document makes the next
+ * re-render put back stale content, or put it back in the wrong place.
+ */
+
+test('refresh merges text only inside the parent it restored', () => {
+  const { window, document } = setup('<p id="a">I run every day</p><p id="b">you run too</p>');
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.pass({ force: true });
+  layer.refresh(new Map());
+
+  const [a, b] = [document.getElementById('a'), document.getElementById('b')];
+  for (const paragraph of [a, b]) {
+    assert.equal(paragraph.childNodes.length, 1, 'a restored paragraph is one text node again');
+    assert.equal(paragraph.firstChild.nodeType, 3);
+  }
+  assert.equal(a.firstChild, document.getElementById('a').firstChild, 'still the same paragraph');
+  assert.equal(a.textContent, 'I run every day');
+  assert.equal(b.textContent, 'you run too');
+});
+
+test('refresh does not merge a parent that still holds element children', () => {
+  const { window, document } = setup('<p>I run <b>every</b> day</p>');
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.pass({ force: true });
+  layer.refresh(new Map());
+
+  const paragraph = document.querySelector('p');
+  assert.equal(paragraph.textContent, 'I run every day', 'the text is whole');
+  assert.ok(paragraph.querySelector('b'), 'the page element is still there');
+  /*
+   * "I run " splits into "I ", the marker and " " around it, so restoring
+   * leaves five nodes: "I ", "run", " ", the page's <b>, then " day". Merging
+   * the first three would quietly replace nodes the page still holds.
+   */
+  assert.equal(paragraph.childNodes.length, 5, 'a parent with element children must be left as it is');
+  assert.equal(paragraph.childNodes[1].nodeValue, 'run');
+  // The element the page supplied is the same node, not a rebuilt one.
+  assert.equal(paragraph.querySelector('b').textContent, 'every');
+});
+
+test('refresh leaves unrelated text nodes alone', () => {
+  const { window, document } = setup(
+    '<p id="a">I run every day</p><p id="b"></p>',
+  );
+  const untouched = document.createTextNode('first');
+  const second = document.createTextNode('second');
+  const target = document.getElementById('b');
+  target.append(untouched, second);
+
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.pass({ force: true });
+  layer.refresh(new Map());
+
+  const after = document.getElementById('b');
+  assert.equal(after.childNodes.length, 2, 'a global merge would have joined these two');
+  assert.equal(after.firstChild, untouched, 'the page keeps its own node identities');
+  assert.equal(after.lastChild, second);
+});
+
+test('turning glosses off leaves the page exactly as it was found', () => {
+  const html = '<p>I run every day</p><p>we run too</p>';
+  const { window, document } = setup(html);
+  const before = document.body.innerHTML;
+
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+  layer.start();
+  layer.pass();
+  assert.equal(document.querySelectorAll(`.${MARKER_CLASS}`).length, 2);
+
+  layer.stop();
+  layer.refresh(new Map());
+
+  assert.equal(document.querySelectorAll(`.${MARKER_CLASS}`).length, 0, 'no markers left behind');
+  assert.equal(document.querySelectorAll(`.${ANNOTATION_CLASS}`).length, 0, 'no annotations left behind');
+  assert.equal(document.body.innerHTML, before, 'the page is byte-for-byte its own again');
+});
+
+test('turning glosses on and off repeatedly does not multiply text nodes', () => {
+  const { window, document } = setup('<p>I run <b>every</b> day</p>');
+  const paragraph = document.querySelector('p');
+  const layer = makeLayer(window, document, new Map([['run', '跑']]));
+
+  const cycle = () => {
+    layer.start();
+    layer.pass();
+    layer.stop();
+    layer.refresh(new Map());
+  };
+
+  cycle();
+  const countAfterFirst = paragraph.childNodes.length;
+  for (let i = 0; i < 3; i += 1) cycle();
+
+  assert.equal(paragraph.textContent, 'I run every day');
+  assert.equal(
+    paragraph.childNodes.length,
+    countAfterFirst,
+    'a second cycle must not add nodes to a parent that cannot be merged',
+  );
+});

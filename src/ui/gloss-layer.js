@@ -212,22 +212,65 @@ export function createGlossLayer({ document, window, translationMap }) {
     window.removeEventListener('resize', schedule);
   }
 
+  /**
+   * Undo every annotation this layer made, and put the page back.
+   *
+   * Each marker is replaced by the text it wrapped — the marker's first child,
+   * which is the word as the page had it, never `textContent`, which would
+   * splice the translation into the prose.
+   *
+   * Text nodes are then merged only inside a parent whose children are *all*
+   * text. A parent that still holds an element belongs to the page's own
+   * structure: a React or Vue view holds references to the nodes it rendered,
+   * so merging across them makes its next re-render restore stale content or
+   * place it wrong. `document.normalize()` would merge the whole document,
+   * which is exactly the failure this avoids.
+   */
+  function restoreMarkers() {
+    const touched = new Set();
+    suppressed = true;
+    try {
+      for (const marker of [...document.querySelectorAll(`.${MARKER_CLASS}`)]) {
+        const parent = marker.parentNode;
+        marker.replaceWith(document.createTextNode(originalTextOf(marker)));
+        if (parent) touched.add(parent);
+      }
+
+      for (const parent of touched) {
+        if (!parent.isConnected) continue;
+        const textOnly = [...parent.childNodes].every((node) => node.nodeType === 3);
+        if (textOnly) parent.normalize();
+      }
+    } finally {
+      suppressed = false;
+    }
+  }
+
   function refresh(nextMap, { force = false } = {}) {
     matcher = createMatcher(nextMap);
     // Drop every annotation we made and restore the original text, so a changed
     // vocabulary never leaves stale translations on the page.
-    suppressed = true;
-    try {
-      for (const marker of [...document.querySelectorAll(`.${MARKER_CLASS}`)]) {
-        const original = marker.firstChild?.nodeType === 3 ? marker.firstChild.nodeValue : marker.textContent;
-        marker.replaceWith(document.createTextNode(original));
-      }
-      document.normalize();
-    } finally {
-      suppressed = false;
-    }
+    restoreMarkers();
     if (active || force) pass({ force });
   }
 
   return { start, stop, refresh, pass, get active() { return active; } };
+}
+
+/**
+ * The text a marker wrapped.
+ *
+ * A marker is the original text node followed by the annotation, so the first
+ * child is the word exactly as the page had it. The fallback rebuilds that word
+ * from every child except the annotation — `marker.textContent` would splice
+ * the translation into the prose.
+ */
+function originalTextOf(marker) {
+  const first = marker.firstChild;
+  if (first?.nodeType === 3) return first.nodeValue;
+  const annotation = marker.querySelector(`.${ANNOTATION_CLASS}`);
+  return [...marker.childNodes]
+    .filter((node) => node !== annotation)
+    .map((node) => node.textContent ?? '')
+    .join('');
 }
