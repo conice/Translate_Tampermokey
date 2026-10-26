@@ -34,7 +34,7 @@ function build() {
 }
 
 /** A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP. */
-function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false, playFails = false }) {
+function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false, playFails = false, clipboard = true }) {
   const dom = new JSDOM(`<!doctype html><html lang="en"><body>${html}</body></html>`, {
     url,
     pretendToBeVisual: true,
@@ -44,6 +44,20 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
   const store = {};
   if (settings) store.settings = JSON.stringify(settings);
   if (entries) store.entries = JSON.stringify(entries);
+
+  // jsdom has no clipboard. It is stubbed here so "复制译文" has somewhere to
+  // copy to; `clipboard: false` exercises the engine that has none at all.
+  const copiedText = [];
+  if (clipboard) {
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          copiedText.push(text);
+        },
+      },
+    });
+  }
 
   const requests = [];
   // Requests that asked for binary bytes: a recording must not be fetched as
@@ -157,7 +171,7 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
   };
 
   window.eval(build());
-  return { window, document: window.document, store, requests, downloads, menu, dom, setPrefersDark, audio };
+  return { window, document: window.document, store, requests, downloads, copiedText, menu, dom, setPrefersDark, audio };
 }
 
 function selectAndDoubleClick(window, element, start, end) {
@@ -777,3 +791,66 @@ test('the entry saved from a lookup carries no audio field', async () => {
   const [entry] = JSON.parse(store.entries);
   assert.equal('audio' in entry, false, 'the recording URL is not part of an Entry');
 });
+
+const SENTENCE = 'The quick brown fox jumps over the lazy dog.';
+const SENTENCE_TRANSLATION = '敏捷的棕色狐狸跳过了那只懒狗。';
+
+function popupWrap(document) {
+  return document.querySelector('[data-tm=popup-host]').shadowRoot.querySelector('.wrap');
+}
+
+test('a sentence gets its translation and no dictionary or save affordance', async () => {
+  const { window, document, requests } = boot({
+    html: `<p id="t">${SENTENCE}</p>`,
+    responses: { clients5: [200, [[SENTENCE_TRANSLATION, 'en']]] },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 0, SENTENCE.length);
+
+  assert.ok(await until(() => popupText(document).includes('敏捷的棕色狐狸')), 'the sentence should be translated');
+
+  const wrap = popupWrap(document);
+  assert.match(wrap.className, /sentence/, 'the sentence layout preserves line breaks');
+  assert.equal(wrap.querySelector('button.primary'), null, 'a sentence cannot be saved to the book');
+  assert.doesNotMatch(wrap.textContent, /加入生词本|过长/);
+  assert.equal(wrap.querySelector('.term'), null, 'the sentence is already on the page');
+  assert.ok(wrap.querySelector('button.copy'), 'a sentence can be copied');
+  assert.ok(wrap.querySelector('button.speak'), 'a sentence can be read aloud');
+  assert.equal(wrap.querySelector('.close').style.display, 'block');
+
+  assert.equal(
+    requests.some((url) => url.includes('dictionaryapi')),
+    false,
+    'a sentence must not be sent to a dictionary',
+  );
+});
+
+test('a word result can be copied as well', async () => {
+  const { window, document, copiedText } = boot({
+    html: '<p id="t">I run every day.</p>',
+    responses: { clients5: [200, [['跑', 'en']]] },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+
+  assert.ok(await until(() => popupText(document).includes('跑')));
+  const copy = popupWrap(document).querySelector('button.copy');
+  assert.ok(copy, 'copying is the same action for a word');
+  copy.click();
+  assert.ok(await until(() => copy.textContent === '已复制'), 'a working clipboard says so');
+  assert.deepEqual(copiedText, ['跑']);
+});
+
+test('a selection past the limit says so instead of doing nothing', async () => {
+  const long = 'word '.repeat(81).trim();
+  assert.ok(long.length > 400, 'the fixture must exceed the limit');
+  const { window, document, requests } = boot({
+    html: `<p id="t">${long}</p>`,
+    responses: { clients5: [200, [['不该发生', 'en']]] },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 0, long.length);
+
+  const hintHost = document.querySelector('[data-tm=hint-host]');
+  assert.ok(await until(() => hintHost.hidden === false), 'an oversized selection must answer');
+  assert.match(hintHost.shadowRoot.textContent, /最多 400 字/);
+  assert.equal(requests.length, 0, 'an oversized selection is not sent anywhere');
+});
+

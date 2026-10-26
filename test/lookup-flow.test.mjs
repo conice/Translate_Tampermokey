@@ -24,12 +24,21 @@ function recorder() {
   return { calls, render: (state) => calls.push(state) };
 }
 
-test('readSelection normalizes and rejects empty or huge selections', () => {
-  assert.equal(readSelection(fakeSelection('  Running, ')), 'running');
-  assert.equal(readSelection(fakeSelection('')), '');
-  assert.equal(readSelection(fakeSelection('x'.repeat(401))), '');
-  assert.equal(readSelection(fakeSelection('hi', 0)), '');
-  assert.equal(readSelection(null), '');
+test('readSelection reports what the Selection is worth looking up', () => {
+  assert.deepEqual(readSelection(fakeSelection('  Running, ')), { status: 'ok', text: 'Running,' });
+  assert.deepEqual(readSelection(fakeSelection('We are all here today.')), {
+    status: 'ok',
+    text: 'We are all here today.',
+  });
+  assert.deepEqual(readSelection(fakeSelection('')), { status: 'empty', text: '' });
+  assert.deepEqual(readSelection(fakeSelection('   ')), { status: 'empty', text: '' });
+  assert.deepEqual(readSelection(fakeSelection('x'.repeat(401))), { status: 'too-long', text: '' });
+  assert.equal(readSelection(fakeSelection('hi', 0)).status, 'empty');
+  assert.equal(readSelection(null).status, 'empty');
+});
+
+test('readSelection keeps the line breaks a sentence was written with', () => {
+  assert.equal(readSelection(fakeSelection('One line.\nTwo lines.')).text, 'One line.\nTwo lines.');
 });
 
 test('sourceLangOf infers CJK languages and leaves latin as auto', () => {
@@ -182,6 +191,62 @@ test('lookup honours a per-site target override', async () => {
   });
   await flow.lookup({ term: 'run' });
   assert.equal(seen[0].target, 'ja');
+});
+
+test('a sentence is translated as written, without dictionary work', async () => {
+  const popup = recorder();
+  const seen = [];
+  let dictionaryCalls = 0;
+  const flow = createLookupFlow({
+    popup,
+    translator: async (args) => {
+      seen.push(args);
+      return [{ translation: '我们都在这儿。', detectedSource: 'en' }];
+    },
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => {
+      dictionaryCalls += 1;
+      return { phonetic: '/x/', lemma: 'be' };
+    },
+    settings: () => ({}),
+  });
+
+  const sentence = 'We are all here.\nAnd the weather is fine.';
+  const result = await flow.lookup({ term: sentence });
+
+  assert.deepEqual(result, [], 'a sentence is not an Entry');
+  assert.equal(seen[0].text, sentence, 'case, punctuation and line breaks must reach the translator');
+  assert.equal(dictionaryCalls, 0, 'a sentence is not in a dictionary');
+
+  const state = popup.calls.at(-1);
+  assert.equal(state.sentence, true);
+  assert.equal(state.canSave, false);
+  assert.equal(state.entry, undefined);
+  assert.equal(state.meanings, undefined);
+  assert.equal(state.lemma, undefined);
+});
+
+test('a sentence that is actually a short phrase stays a word', async () => {
+  const popup = recorder();
+  const seen = [];
+  const flow = createLookupFlow({
+    popup,
+    translator: async (args) => {
+      seen.push(args);
+      return [{ translation: '起飞', detectedSource: 'en' }];
+    },
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => ({ phonetic: '/teɪk ɒf/' }),
+    settings: () => ({}),
+  });
+
+  await flow.lookup({ term: 'Take off' });
+
+  assert.equal(popup.calls.at(-1).sentence, false);
+  assert.equal(seen[0].text, 'take off', 'a saveable phrase is still normalized as a word');
+  assert.ok(popup.calls.at(-1).phonetic, 'a word still gets dictionary details');
 });
 
 test('addEntry writes the entry and notifies', () => {

@@ -13,6 +13,25 @@ export function normalizeTerm(raw) {
   return term.toLowerCase();
 }
 
+/**
+ * Tidy selected text that is being looked up as a sentence rather than a word.
+ *
+ * Only whitespace is touched: runs of spaces and tabs collapse, each line keeps
+ * its own break, and leading/trailing blank lines go. Case and punctuation are
+ * the sentence — lowercasing it would turn the translation into a run-on line
+ * that no longer reads like what the reader selected.
+ */
+export function normalizeSentence(raw) {
+  if (typeof raw !== 'string') return '';
+  const lines = raw
+    .replace(/\r\n?/gu, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[^\S\n]+/gu, ' ').trim());
+  while (lines.length > 0 && lines[0] === '') lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines.join('\n');
+}
+
 const SCRIPT_PATTERNS = [
   ['kana', /\p{Script=Hiragana}|\p{Script=Katakana}/u],
   ['hangul', /\p{Script=Hangul}/u],

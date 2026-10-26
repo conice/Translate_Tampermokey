@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeTerm, scriptOf, isCjk, countWords } from '../src/core/normalize.js';
+import {
+  normalizeTerm,
+  normalizeSentence,
+  scriptOf,
+  isCjk,
+  countWords,
+} from '../src/core/normalize.js';
 
 test('normalizeTerm strips surrounding punctuation and lowercases latin', () => {
   assert.equal(normalizeTerm('Running,'), 'running');
@@ -25,6 +31,37 @@ test('normalizeTerm handles empty and punctuation-only input', () => {
   assert.equal(normalizeTerm('   '), '');
   assert.equal(normalizeTerm('…'), '');
   assert.equal(normalizeTerm(',.'), '');
+});
+
+test('normalizeSentence tidies whitespace but keeps case and punctuation', () => {
+  assert.equal(normalizeSentence('  The  Quick Brown Fox '), 'The Quick Brown Fox');
+  assert.equal(normalizeSentence('Running,'), 'Running,');
+  assert.equal(normalizeSentence('a\t\tb   c'), 'a b c');
+  assert.equal(normalizeSentence('well-known'), 'well-known');
+});
+
+test('normalizeSentence keeps the line breaks of a paragraph', () => {
+  assert.equal(normalizeSentence('one\ntwo'), 'one\ntwo');
+  assert.equal(normalizeSentence('one \n  two  '), 'one\ntwo');
+  assert.equal(normalizeSentence('one\n\nthree'), 'one\n\nthree');
+  assert.equal(normalizeSentence('\n\none\n\n'), 'one');
+});
+
+test('normalizeSentence normalizes carriage returns', () => {
+  assert.equal(normalizeSentence('a\r\nb\rc'), 'a\nb\nc');
+});
+
+test('normalizeSentence handles empty input', () => {
+  assert.equal(normalizeSentence(''), '');
+  assert.equal(normalizeSentence('   \n  '), '');
+  assert.equal(normalizeSentence(undefined), '');
+});
+
+test('normalizeTerm and normalizeSentence stay independent', () => {
+  // The word path lowercases for the Entry identity; the sentence path must not,
+  // or the translation comes back as a lowercased line of text.
+  assert.equal(normalizeTerm('The Cat'), 'the cat');
+  assert.equal(normalizeSentence('The Cat'), 'The Cat');
 });
 
 test('scriptOf classifies writing systems', () => {

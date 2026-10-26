@@ -5,15 +5,27 @@
  * DOM access is limited to reading the document language; everything else is
  * injected, so the flow can be exercised without a browser.
  */
-import { normalizeTerm, scriptOf, canBecomeEntry } from '../core/normalize.js';
+import { normalizeTerm, normalizeSentence, scriptOf, canBecomeEntry } from '../core/normalize.js';
 import { resolveTarget } from '../core/lang.js';
 
-/** Read the Selection, cleaned up. Returns '' when there is nothing usable. */
+/** Longest Selection worth a Lookup, in characters. */
+export const MAX_SELECTION_CHARS = 400;
+
+/**
+ * Read the Selection, tidied.
+ *
+ * Returns a status rather than an empty string for everything that cannot be
+ * looked up: "too long" has to be told apart from "nothing selected", because
+ * one deserves a short explanation next to the Selection and the other
+ * deserves silence. Text is only whitespace-tidied here — whether it is a word
+ * or a sentence is the Lookup's decision, not the Selection's.
+ */
 export function readSelection(selection) {
-  if (!selection || selection.rangeCount === 0) return '';
-  const text = String(selection.toString() ?? '');
-  if (text.length > 400) return ''; // selecting the whole page is not a word lookup
-  return normalizeTerm(text);
+  if (!selection || selection.rangeCount === 0) return { status: 'empty', text: '' };
+  const text = normalizeSentence(String(selection.toString() ?? ''));
+  if (text.length > MAX_SELECTION_CHARS) return { status: 'too-long', text: '' };
+  if (text.length === 0) return { status: 'empty', text: '' };
+  return { status: 'ok', text };
 }
 
 /**
@@ -54,7 +66,18 @@ export function createLookupFlow({
   let requestId = 0;
 
   async function lookup({ term, anchor, sourceLang }) {
-    const normalized = normalizeTerm(term);
+    const text = normalizeSentence(term);
+    if (!text) return [];
+
+    /*
+     * A word is an identity: it is lowercased, stripped of surrounding
+     * punctuation, and may be saved to the Vocabulary Book. Anything longer
+     * than a word is a sentence, and a sentence is only ever shown — keeping
+     * its case, punctuation and line breaks is what makes the translation read
+     * as the sentence the user selected.
+     */
+    const sentence = !canBecomeEntry(text);
+    const normalized = sentence ? text : normalizeTerm(text);
     if (!normalized) return [];
 
     const config = settings();
@@ -66,19 +89,26 @@ export function createLookupFlow({
     });
 
     const current = ++requestId;
-    const canSave = canBecomeEntry(normalized);
+    const canSave = !sentence;
 
-    popup.render({ status: 'loading', term: normalized, anchor, sourceLang: source });
+    popup.render({
+      status: 'loading',
+      sentence,
+      term: normalized,
+      anchor,
+      sourceLang: source,
+    });
 
     try {
       const [result] = await translator({ text: normalized, source, target });
       if (current !== requestId) return [];
 
-      // Dictionary details are a bonus. A dictionary endpoint that throws (or
-      // a parse bug in one) must never turn a working translation into an
-      // error state.
+      /*
+       * Dictionary details are a bonus for a word. A sentence has no entry in
+       * a dictionary, and asking anyway would spend a request to learn nothing.
+       */
       let details;
-      if (dictionary) {
+      if (dictionary && !sentence) {
         try {
           details = await dictionary(normalized);
         } catch (error) {
@@ -94,13 +124,29 @@ export function createLookupFlow({
         : source === 'auto'
           ? 'en'
           : source;
+      const translation = result?.translation ?? '';
+
+      if (sentence) {
+        popup.render({
+          status: 'ok',
+          sentence: true,
+          term: normalized,
+          translation,
+          canSpeak: Boolean(speak),
+          canSave: false,
+          anchor,
+          sourceLang: entrySource,
+          onRetry: () => lookup({ term: normalized, anchor, sourceLang }),
+        });
+        return [];
+      }
 
       const entry = {
         term: normalized,
         normalized,
         sourceLang: entrySource,
         targetLang: target,
-        translation: result?.translation ?? '',
+        translation,
         phonetic: details?.phonetic,
         partOfSpeech: details?.meanings?.[0]?.pos,
       };
@@ -132,6 +178,7 @@ export function createLookupFlow({
 
       popup.render({
         status: 'ok',
+        sentence: false,
         term: normalized,
         translation: entry.translation,
         detectedSource,
@@ -155,6 +202,7 @@ export function createLookupFlow({
       console.debug('[tm] lookup failed:', error);
       popup.render({
         status: 'error',
+        sentence,
         term: normalized,
         anchor,
         sourceLang: source,

@@ -11,6 +11,8 @@ import { createLookupFlow, addEntry } from './app/lookup-flow.js';
 import { createPronouncer } from './app/pronunciation.js';
 import { createPopup } from './ui/popup.js';
 import { createBubble } from './ui/bubble.js';
+import { createHint } from './ui/hint.js';
+import { createCopyText } from './app/clipboard.js';
 import { createGlossLayer } from './ui/gloss-layer.js';
 import { createPanel } from './ui/panel.js';
 import { applyPalette } from './ui/palette.js';
@@ -161,16 +163,23 @@ function createDictionaryLookup({ fetchText, cache }) {
   };
 }
 
+const copyText = createCopyText({ navigator: window.navigator, document });
+
 const popup = createPopup({
   document,
+  window,
   touch: touchPrimary,
   onAdd: async (entry) => {
     if (!entry) return;
     addEntry(book, entry, () => refreshGlosses());
   },
   onSpeak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
+  onCopy: copyText,
   onClose: () => {},
 });
+
+/** A brief label next to an oversized Selection, so it is not answered with silence. */
+const hint = createHint({ document, window });
 
 /**
  * Touch devices get a Bubble next to the finished Selection instead of relying
@@ -308,19 +317,27 @@ function onDoubleClick(event) {
   if (!settings.lookupEnabled) return;
   if (event.target?.closest?.('[data-tm]')) return;
   const selection = window.getSelection();
-  const term = flow.readSelection(selection);
-  if (!term) return;
+  const read = flow.readSelection(selection);
+  if (read.status === 'empty') return;
   const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
   // A browser that does fire dblclick on touch has already answered via the
   // Popup, so the Bubble must not linger over it.
   bubble.hide();
   pendingSelection = null;
-  flow.lookup({ term, anchor: anchorOf(range) });
+  // An oversized Selection is the one case that would otherwise look like a
+  // dead script, so it gets words instead of silence.
+  if (read.status === 'too-long') {
+    hint.show(anchorOf(range));
+    return;
+  }
+  hint.hide();
+  flow.lookup({ term: read.text, anchor: anchorOf(range) });
 }
 
 /** Start a lookup for `term`, ignoring empty input. */
 function lookupTerm(term, anchor) {
   if (!term) return;
+  hint.hide();
   if (touchPrimary) {
     // Drop the native highlight: on a phone it covers the words around the one
     // being looked up, and its drag handles sit on top of the Popup.

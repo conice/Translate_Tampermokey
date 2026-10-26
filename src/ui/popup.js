@@ -50,6 +50,9 @@ const STYLE = `
 }
 .speak:hover { background: var(--tm-hover, #eff6ff); }
 .translation { margin-top: 6px; font-size: 16px; word-break: break-word; }
+/* A sentence was written with line breaks; flattening them changes the meaning
+   of what the reader selected. */
+.wrap.sentence .translation { white-space: pre-wrap; }
 .detected { margin-top: 2px; color: var(--tm-muted, #8a8a8a); font-size: 11px; }
 .meanings { margin: 7px 0 0; padding: 0; list-style: none; }
 .meanings li { color: var(--tm-fg, #4b4b4b); opacity: .78; font-size: 12px; margin-top: 3px; }
@@ -82,11 +85,11 @@ button.ghost {
 .wrap.touch button.primary { padding: 11px 16px; font-size: 15px; }
 .wrap.touch button.ghost { padding: 10px; font-size: 14px; }
 .wrap.touch .speak { padding: 7px 10px; font-size: 14px; }
-.wrap.touch .close { display: block; }
 /* Only the head row shares space with the close button; everything below it
    starts under the button's 36px box. */
 .wrap.touch .head,
-.wrap.touch > .term { padding-right: 36px; }
+.wrap.touch > .term,
+.wrap.sentence > .translation { padding-right: 36px; }
 .close {
   all: unset; display: none; position: absolute; top: 2px; right: 2px;
   width: 36px; height: 36px; text-align: center; line-height: 36px;
@@ -94,7 +97,14 @@ button.ghost {
 }
 `;
 
-export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }) {
+export function createPopup({ document, window, onAdd, onSpeak, onCopy, onClose, touch = false }) {
+  const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
   const host = document.createElement('div');
   host.setAttribute('data-tm', 'popup-host');
   host.style.cssText = 'all:initial; position:fixed; top:0; left:0; width:0; height:0;';
@@ -130,18 +140,34 @@ export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }
   function render(state) {
     current = state;
     wrap.classList.remove('show');
+    wrap.classList.toggle('sentence', Boolean(state.sentence));
     // `replaceChildren` would drop the close button, so re-seat it each time.
     wrap.replaceChildren(close);
+    // A sentence has no page text to click away from, so it always offers the
+    // explicit close; a desktop word box keeps the quieter click-away.
+    close.style.display = state.sentence || touch ? 'block' : 'none';
 
     if (state.status === 'loading') {
-      wrap.append(el('div', 'term', state.term), el('div', 'translation hint', '翻译中…'));
+      if (!state.sentence) wrap.append(el('div', 'term', state.term));
+      wrap.append(el('div', 'translation hint', '翻译中…'));
     } else if (state.status === 'error') {
-      wrap.append(el('div', 'term', state.term));
+      if (!state.sentence) wrap.append(el('div', 'term', state.term));
       wrap.append(el('div', 'translation error', '翻译服务暂不可用'));
       const actions = el('div', 'actions');
       const retry = el('button', 'ghost', '重试');
       retry.onclick = () => state.onRetry?.();
       actions.append(retry);
+      wrap.append(actions);
+    } else if (state.sentence) {
+      wrap.append(el('div', 'translation', state.translation));
+      const actions = el('div', 'actions');
+      addCopy(actions, state);
+      if (state.canSpeak) {
+        const speak = el('button', 'speak', '🔊');
+        speak.title = '发音';
+        speak.onclick = () => onSpeak?.(state.term, state.sourceLang, state.audio);
+        actions.append(speak);
+      }
       wrap.append(actions);
     } else {
       const head = el('div', 'head');
@@ -189,6 +215,7 @@ export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }
       };
       actions.append(add);
       if (!state.canSave) actions.append(el('span', 'hint', '过长,仅可查看'));
+      addCopy(actions, state);
       wrap.append(actions);
     }
     setHidden(false);
@@ -196,6 +223,26 @@ export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }
     host.getBoundingClientRect();
     wrap.classList.add('show');
     place(state.anchor);
+  }
+
+  /**
+   * "Copy translation", the one action a sentence and a word have in common.
+   * A refusal (permission policies block the clipboard on plenty of sites) is
+   * not worth a message: the label simply stays put.
+   */
+  function addCopy(actions, state) {
+    const button = el('button', 'ghost copy', '复制译文');
+    button.onclick = async () => {
+      let copied = false;
+      try {
+        copied = (await onCopy?.(state.translation)) === true;
+      } catch {
+        copied = false;
+      }
+      button.textContent = copied ? '已复制' : '复制译文';
+    };
+    actions.append(button);
+    return button;
   }
 
   function place(anchor) {
@@ -238,11 +285,4 @@ export function createPopup({ document, onAdd, onSpeak, onClose, touch = false }
   }
 
   return { render, hide, contains, host, get current() { return current; } };
-}
-
-function el(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
 }
