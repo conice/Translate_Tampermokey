@@ -18,7 +18,7 @@ import { createGlossLayer } from './ui/gloss-layer.js';
 import { createPanel } from './ui/panel.js';
 import { applyPalette } from './ui/palette.js';
 import { resolveTheme } from './core/theme.js';
-import { isTouchPrimary, shouldOfferBubble, selectionTerm, isOwnSelection, isRectVisible } from './core/gesture.js';
+import { isTouchPrimary, shouldOfferBubble, selectionTerm, isOwnSelection, isRectVisible, isEditableSelection, MAX_BUBBLE_CHARS } from './core/gesture.js';
 
 const gm = {
   getValue: (key, fallback) => (typeof GM_getValue === 'function' ? GM_getValue(key, fallback) : fallback),
@@ -382,9 +382,20 @@ function evaluateSelection() {
     return;
   }
   const selection = window.getSelection();
+  const ownUi = isOwnSelection(selection);
   // Selecting text inside the Popup or Panel is not a lookup; the chain has to
   // be followed through the shadow root to notice it.
-  if (!shouldOfferBubble({ selection, isOwnUi: isOwnSelection(selection) })) {
+  if (!shouldOfferBubble({ selection, isOwnUi: ownUi })) {
+    /*
+     * An oversized Selection is the one refusal worth explaining: a phone has
+     * no other way to tell the user why no bubble appeared. Selections in our
+     * own UI and in text fields stay silent, since the user is not asking to
+     * translate anything there.
+     */
+    const text = selectionTerm(selection);
+    if (text.length > MAX_BUBBLE_CHARS && !ownUi && !isEditableSelection(selection)) {
+      hint.show(currentAnchor());
+    }
     // The user collapsed or replaced the selection: the Bubble is stale now.
     bubble.hide();
     pendingSelection = null;

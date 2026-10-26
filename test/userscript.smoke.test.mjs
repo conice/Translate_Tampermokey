@@ -33,6 +33,13 @@ function build() {
   return readFileSync(resolve(ROOT, 'dist/translate-tampermokey.user.js'), 'utf8');
 }
 
+test('the built header carries the version package.json declares', () => {
+  const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
+  const header = /^\/\/ @version\s+(\S+)$/m.exec(build());
+  assert.ok(header, 'the userscript header must declare a version');
+  assert.equal(header[1], pkg.version, 'a release must not bump two places');
+});
+
 /** A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP. */
 function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false, playFails = false, clipboard = true }) {
   const dom = new JSDOM(`<!doctype html><html lang="en"><body>${html}</body></html>`, {
@@ -415,6 +422,17 @@ test('scrolling on desktop leaves the popup open and where it was', async () => 
   assert.equal(host.hidden, false, 'a deliberately opened popup survives a scroll');
   assert.equal(wrap.style.top, before.top);
   assert.equal(wrap.style.left, before.left);
+});
+
+test('an oversized selection on touch says so, since no bubble will appear', async () => {
+  const long = 'word '.repeat(81).trim();
+  const { window, document } = boot({ html: `<p id="t">${long}</p>`, touch: true });
+  touchSelect(window, document.getElementById('t'), 0, long.length);
+
+  const hintHost = document.querySelector('[data-tm=hint-host]');
+  assert.ok(await until(() => hintHost.hidden === false), 'silence would look like a broken script');
+  assert.match(hintHost.shadowRoot.textContent, /最多 400 字/);
+  assert.equal(bubbleHost(document).hidden, true, 'no bubble for a selection past the limit');
 });
 
 test('one tap on the bubble starts exactly one lookup', async () => {

@@ -15,10 +15,16 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const ENTRY = resolve(ROOT, 'src/main.js');
 const OUT = resolve(ROOT, 'dist/translate-tampermokey.user.js');
 
+/*
+ * The version lives in package.json and is read from there, so the two can
+ * never drift: a release bumps one line, not two.
+ */
+const { version } = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf8'));
+
 const META = `// ==UserScript==
 // @name         Translate Tampermokey
 // @namespace    https://github.com/local/translate-tampermokey
-// @version      0.2.0
+// @version      ${version}
 // @description  选词弹窗翻译(桌面双击 / 触屏选词后点「译」),收藏进生词本,生词本词条以注音形式常驻原文右侧
 // @author       local
 // @match        *://*/*

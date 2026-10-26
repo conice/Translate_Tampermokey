@@ -1,6 +1,6 @@
 {
   "name": "translate-tampermokey",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Tampermonkey userscript: double-click lookup, vocabulary book, inline glosses",
