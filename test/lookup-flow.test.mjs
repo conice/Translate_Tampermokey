@@ -1,0 +1,242 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readSelection, sourceLangOf, createLookupFlow, addEntry } from '../src/app/lookup-flow.js';
+
+function fakeSelection(text, rangeCount = 1) {
+  return { rangeCount, toString: () => text };
+}
+
+function fakeBook() {
+  const map = new Map();
+  return {
+    has: (id) => map.has(id),
+    add: (entry) => {
+      map.set(entry.entryId, entry);
+      return entry;
+    },
+    get: (id) => map.get(id),
+    size: () => map.size,
+  };
+}
+
+function recorder() {
+  const calls = [];
+  return { calls, render: (state) => calls.push(state) };
+}
+
+test('readSelection normalizes and rejects empty or huge selections', () => {
+  assert.equal(readSelection(fakeSelection('  Running, ')), 'running');
+  assert.equal(readSelection(fakeSelection('')), '');
+  assert.equal(readSelection(fakeSelection('x'.repeat(401))), '');
+  assert.equal(readSelection(fakeSelection('hi', 0)), '');
+  assert.equal(readSelection(null), '');
+});
+
+test('sourceLangOf infers CJK languages and leaves latin as auto', () => {
+  assert.equal(sourceLangOf('跑'), 'zh');
+  assert.equal(sourceLangOf('りんご'), 'ja');
+  assert.equal(sourceLangOf('사과'), 'ko');
+  assert.equal(sourceLangOf('run'), 'auto');
+});
+
+test('lookup renders loading then the result', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    settings: () => ({}),
+  });
+
+  await flow.lookup({ term: 'run', anchor: { top: 0, bottom: 10, left: 0 } });
+  assert.equal(popup.calls[0].status, 'loading');
+  assert.equal(popup.calls.at(-1).status, 'ok');
+  assert.equal(popup.calls.at(-1).translation, '跑');
+  assert.equal(popup.calls.at(-1).canSave, true);
+});
+
+test('lookup marks an entry already in the book', async () => {
+  const popup = recorder();
+  const book = fakeBook();
+  book.add({ entryId: 'en|run', normalized: 'run' });
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book,
+    pageLanguage: () => 'en',
+    settings: () => ({}),
+  });
+  await flow.lookup({ term: 'run' });
+  assert.equal(popup.calls.at(-1).alreadySaved, true);
+});
+
+test('lookup refuses to save a long phrase but still translates it', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '很长的一句话', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    settings: () => ({}),
+  });
+  await flow.lookup({ term: 'this is a rather long phrase to save' });
+  assert.equal(popup.calls.at(-1).canSave, false);
+  assert.equal(popup.calls.at(-1).translation, '很长的一句话');
+});
+
+test('lookup shows an error state and offers a retry', async () => {
+  const popup = recorder();
+  let attempt = 0;
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error('down');
+      return [{ translation: '跑', detectedSource: 'en' }];
+    },
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    settings: () => ({}),
+  });
+
+  await flow.lookup({ term: 'run' });
+  assert.equal(popup.calls.at(-1).status, 'error');
+  await popup.calls.at(-1).onRetry();
+  assert.equal(popup.calls.at(-1).status, 'ok');
+});
+
+test('a slow lookup that resolves after a newer one is discarded', async () => {
+  const popup = recorder();
+  let releaseFirst;
+  const firstDone = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let call = 0;
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => {
+      call += 1;
+      if (call === 1) {
+        await firstDone;
+        return [{ translation: '旧', detectedSource: 'en' }];
+      }
+      return [{ translation: '新', detectedSource: 'en' }];
+    },
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    settings: () => ({}),
+  });
+
+  const slow = flow.lookup({ term: 'run' });
+  await flow.lookup({ term: 'apple' });
+  releaseFirst();
+  await slow;
+  assert.equal(popup.calls.at(-1).translation, '新');
+});
+
+test('lookup attaches dictionary details when available', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => ({ phonetic: '/rʌn/', meanings: [{ pos: 'verb', definition: 'x' }] }),
+    settings: () => ({}),
+  });
+  await flow.lookup({ term: 'run' });
+  assert.equal(popup.calls.at(-1).phonetic, '/rʌn/');
+  assert.equal(popup.calls.at(-1).meanings[0].pos, 'verb');
+});
+
+test('a failing dictionary call does not fail the lookup', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => {
+      throw new Error('nope');
+    },
+    settings: () => ({}),
+  });
+  await flow.lookup({ term: 'run' });
+  assert.equal(popup.calls.at(-1).status, 'ok');
+});
+
+test('lookup honours a per-site target override', async () => {
+  const popup = recorder();
+  const seen = [];
+  const flow = createLookupFlow({
+    popup,
+    translator: async ({ text, source, target }) => {
+      seen.push({ source, target });
+      return [{ translation: 'x', detectedSource: 'en' }];
+    },
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    settings: () => ({ targetOverride: () => 'ja' }),
+    host: 'example.com',
+  });
+  await flow.lookup({ term: 'run' });
+  assert.equal(seen[0].target, 'ja');
+});
+
+test('addEntry writes the entry and notifies', () => {
+  const book = fakeBook();
+  const saved = [];
+  const entry = {
+    term: 'run',
+    normalized: 'run',
+    sourceLang: 'en',
+    targetLang: 'zh-CN',
+    translation: '跑',
+  };
+  assert.equal(addEntry(book, entry, (e) => saved.push(e)), true);
+  assert.equal(book.get('en|run').translation, '跑');
+  assert.equal(saved.length, 1);
+});
+
+test('addEntry refuses an entry with no translation', () => {
+  const book = fakeBook();
+  assert.equal(addEntry(book, { normalized: 'x', sourceLang: 'en' }), false);
+  assert.equal(book.size(), 0);
+});
+test('a lemma hint is offered with its own translation', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async ({ text }) => [
+      { translation: text === 'running' ? '跑步中' : '跑', detectedSource: 'en' },
+    ],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => ({ lemma: 'run' }),
+    settings: () => ({}),
+  });
+  await flow.lookup({ term: 'running' });
+  const state = popup.calls.at(-1);
+  assert.equal(state.lemma.term, 'run');
+  assert.equal(state.lemma.translation, '跑');
+  assert.equal(state.translation, '跑步中', 'the saved form must stay what the user selected');
+});
+
+test('a failing lemma translation does not turn the lookup into an error', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async ({ text }) => {
+      if (text === 'run') throw new Error('down');
+      return [{ translation: '跑步中', detectedSource: 'en' }];
+    },
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => ({ lemma: 'run' }),
+    settings: () => ({}),
+  });
+  await flow.lookup({ term: 'running' });
+  assert.equal(popup.calls.at(-1).status, 'ok');
+  assert.equal(popup.calls.at(-1).lemma, undefined);
+});
