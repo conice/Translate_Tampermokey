@@ -413,6 +413,9 @@ function evaluateSelection() {
   // A fresh selection supersedes whatever the Popup was showing.
   if (popup.current) popup.hide();
 
+  // The Bubble replaces the "too long" label: keeping both would leave a stale
+  // message hovering over the new selection for the rest of its two seconds.
+  hint.hide();
   pendingSelection = text;
   bubble.show(currentAnchor());
 }

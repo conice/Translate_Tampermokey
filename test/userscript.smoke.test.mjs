@@ -433,6 +433,12 @@ test('an oversized selection on touch says so, since no bubble will appear', asy
   assert.ok(await until(() => hintHost.hidden === false), 'silence would look like a broken script');
   assert.match(hintHost.shadowRoot.textContent, /最多 400 字/);
   assert.equal(bubbleHost(document).hidden, true, 'no bubble for a selection past the limit');
+
+  // Selecting a word afterwards replaces the message with the Bubble; the old
+  // label must not hang over the new selection.
+  touchSelect(window, document.getElementById('t'), 0, 4);
+  assert.ok(await until(() => hintHost.hidden === true), 'a stale label must not outlive its selection');
+  assert.equal(bubbleHost(document).hidden, false);
 });
 
 test('one tap on the bubble starts exactly one lookup', async () => {
