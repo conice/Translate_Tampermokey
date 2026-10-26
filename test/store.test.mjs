@@ -85,37 +85,148 @@ test('store tolerates corrupt storage', () => {
   assert.deepEqual(store.all(), []);
 });
 
-test('store exports and imports JSON without duplicating', () => {
+test('store exports CSV and imports it without duplicating', () => {
   const store = createStore({ storage: memoryStorage() });
-  store.add(makeEntry(base));
-  const json = store.exportJson();
+  store.add(makeEntry({ ...base, now: () => 1_700_000_000_000 }));
+  const csv = store.exportCsv();
+
+  const [header, row] = csv.replace(/^\uFEFF/u, '').split('\r\n');
+  assert.equal(
+    header,
+    'term,normalized,sourceLang,targetLang,translation,phonetic,partOfSpeech,addedAt',
+  );
+  assert.equal(row, 'run,run,en,zh-CN,跑,,,2023-11-14T22:13:20.000Z');
 
   const target = createStore({ storage: memoryStorage() });
   target.add(makeEntry({ ...base, translation: '旧值' }));
-  const report = target.importJson(json);
+  const report = target.importCsv(csv);
   assert.deepEqual(report, { added: 0, updated: 1, skipped: 0 });
   assert.equal(target.get('en|run').translation, '跑');
 });
 
-test('store import reports malformed records as skipped', () => {
+test('store CSV quoting survives commas, quotes and line breaks', () => {
   const store = createStore({ storage: memoryStorage() });
-  const report = store.importJson(
-    JSON.stringify({
-      entries: [
-        { entryId: 'en|ok', term: 'ok', normalized: 'ok', sourceLang: 'en', targetLang: 'zh-CN', translation: '好' },
-        { nope: 1 },
-        { entryId: 'en|bad' },
-      ],
+  store.add(
+    makeEntry({
+      ...base,
+      term: 'well, "known"',
+      normalized: 'well, "known"',
+      translation: '第一行\n第二行',
     }),
   );
-  assert.equal(report.skipped, 2);
-  assert.equal(report.added, 1);
+  const csv = store.exportCsv();
+  assert.match(csv, /"well, ""known"""/, 'a term with a comma and quotes must be wrapped');
+
+  const target = createStore({ storage: memoryStorage() });
+  assert.deepEqual(target.importCsv(csv), { added: 1, updated: 0, skipped: 0 });
+  const [entry] = target.all();
+  assert.equal(entry.term, 'well, "known"');
+  assert.equal(entry.translation, '第一行\n第二行');
 });
 
-test('store import rejects input that is not an entry list', () => {
+test('store import maps columns by header rather than position', () => {
   const store = createStore({ storage: memoryStorage() });
-  assert.throws(() => store.importJson('{"hello":1}'), /entries/);
-  assert.throws(() => store.importJson('not json'), /JSON/);
+  const report = store.importCsv(
+    'translation,targetLang,sourceLang,normalized\r\n好,zh-CN,en,ok\r\n',
+  );
+  assert.deepEqual(report, { added: 1, updated: 0, skipped: 0 });
+  assert.equal(store.get('en|ok').translation, '好');
+  assert.equal(store.get('en|ok').term, 'ok', 'term falls back to normalized');
+});
+
+test('store import reports malformed rows as skipped', () => {
+  const store = createStore({ storage: memoryStorage() });
+  const report = store.importCsv(
+    'term,normalized,sourceLang,targetLang,translation\r\n' +
+      'ok,ok,en,zh-CN,好\r\n' +
+      ',missing-source,en,,好\r\n' +
+      ',,en,zh-CN,没有词形\r\n' +
+      'nope,nope,en,zh-CN,\r\n',
+  );
+  assert.deepEqual(report, { added: 1, updated: 0, skipped: 3 });
+});
+
+test('a row of nothing but commas is counted, not dropped as a blank line', () => {
+  const store = createStore({ storage: memoryStorage() });
+  const report = store.importCsv(
+    'term,normalized,sourceLang,targetLang,translation\r\n,,,\r\n',
+  );
+  assert.deepEqual(report, { added: 0, updated: 0, skipped: 1 });
+});
+
+test('replacing with a file that has no usable row keeps the existing book', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add(makeEntry(base));
+
+  assert.throws(
+    () => store.importCsv('term,normalized,sourceLang,targetLang,translation\r\n', {
+      mode: 'replace',
+    }),
+    /没有可导入的词条/,
+  );
+  assert.throws(
+    () => store.importCsv('term,normalized,sourceLang,targetLang,translation\r\n,,\r\n', {
+      mode: 'replace',
+    }),
+    /没有可导入的词条/,
+  );
+  assert.equal(store.get('en|run').translation, '跑');
+});
+
+test('store import refuses CSV without the required columns', () => {
+  const store = createStore({ storage: memoryStorage() });
+  assert.throws(() => store.importCsv('term,translation\r\nrun,跑'), /缺少列/);
+});
+
+test('store import refuses an unclosed quoted cell', () => {
+  const store = createStore({ storage: memoryStorage() });
+  assert.throws(
+    () => store.importCsv('term,normalized,sourceLang,targetLang,translation\r\n"run,run,en,zh-CN,跑'),
+    /CSV/,
+  );
+});
+
+test('store import accepts a BOM and LF line endings', () => {
+  const store = createStore({ storage: memoryStorage() });
+  const report = store.importCsv(
+    '\uFEFFterm,normalized,sourceLang,targetLang,translation\nrun,run,en,zh-CN,跑\n',
+  );
+  assert.deepEqual(report, { added: 1, updated: 0, skipped: 0 });
+});
+
+test('store import keeps a missing addedAt in the present', () => {
+  const store = createStore({ storage: memoryStorage(), now: () => 123 });
+  store.importCsv('normalized,sourceLang,targetLang,translation\r\nrun,en,zh-CN,跑');
+  assert.equal(store.get('en|run').addedAt, 123);
+});
+
+test('store replace mode drops the entries the file does not contain', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add(makeEntry(base));
+  store.add(makeEntry({ ...base, term: 'apple', normalized: 'apple', translation: '苹果' }));
+
+  const report = store.importCsv(
+    'term,normalized,sourceLang,targetLang,translation\r\napple,apple,en,zh-CN,苹果(新)\r\n',
+    { mode: 'replace' },
+  );
+
+  assert.deepEqual(report, { added: 1, updated: 0, skipped: 0 });
+  assert.deepEqual(store.all().map((e) => e.entryId), ['en|apple']);
+  assert.equal(store.get('en|apple').translation, '苹果(新)');
+});
+
+test('store merge mode keeps the entries the file does not mention', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add(makeEntry(base));
+  store.importCsv('term,normalized,sourceLang,targetLang,translation\r\napple,apple,en,zh-CN,苹果');
+  assert.deepEqual(store.all().map((e) => e.entryId).sort(), ['en|apple', 'en|run']);
+});
+
+test('a file missing required columns cannot erase the book in replace mode', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add(makeEntry(base));
+  assert.throws(() => store.importCsv('term,translation\r\nrun,跑', { mode: 'replace' }), /缺少列/);
+  assert.equal(store.get('en|run').translation, '跑');
 });
 
 test('store builds a lookup map keyed by normalized term for gloss matching', () => {

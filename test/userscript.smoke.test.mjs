@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { JSDOM } from 'jsdom';
+import { STORAGE_CODECS } from '../src/app/storage.js';
 
 /**
  * Boots the *built* userscript, not the sources: this is the only test that
@@ -40,8 +41,14 @@ test('the built header carries the version package.json declares', () => {
   assert.equal(header[1], pkg.version, 'a release must not bump two places');
 });
 
-/** A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP. */
-function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false, playFails = false, clipboard = true }) {
+/**
+ * A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP.
+ *
+ * Storage is seeded with the formats the script itself writes, so a test that
+ * passes here is testing the real path. `rawStore` bypasses the codecs: it is
+ * how a test reproduces what an older version left on disk.
+ */
+function boot({ url = 'https://example.com/article', html, settings, entries, rawStore, responses = {}, touch = false, prefersDark = false, playFails = false, clipboard = true }) {
   const dom = new JSDOM(`<!doctype html><html lang="en"><body>${html}</body></html>`, {
     url,
     pretendToBeVisual: true,
@@ -49,8 +56,9 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
   });
   const { window } = dom;
   const store = {};
-  if (settings) store.settings = JSON.stringify(settings);
-  if (entries) store.entries = JSON.stringify(entries);
+  if (settings) store.settings = STORAGE_CODECS.settings.encode(settings);
+  if (entries) store.entries = STORAGE_CODECS.entries.encode(entries);
+  Object.assign(store, rawStore);
 
   // jsdom has no clipboard. It is stubbed here so "复制译文" has somewhere to
   // copy to; `clipboard: false` exercises the engine that has none at all.
@@ -259,10 +267,12 @@ test('saving from the popup writes an entry and glides into the gloss layer', as
   button.click();
   await until(() => Boolean(store.entries));
 
-  const entries = JSON.parse(store.entries);
+  const entries = STORAGE_CODECS.entries.decode(store.entries);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].normalized, 'run');
   assert.equal(entries[0].translation, '跑');
+  assert.match(store.entries, /^term,normalized,sourceLang,targetLang,translation/,
+    'the book must be stored as CSV, not as one JSON blob');
 });
 
 test('a failing first provider falls through to the next and the popup still fills', async () => {
@@ -574,6 +584,47 @@ test('the panel opens from the menu and lists saved entries', async () => {
   assert.match(text, /跑/);
 });
 
+test('a book and settings saved by the JSON era are still read', async () => {
+  const { document, menu, store } = boot({
+    html: '<p id="t">I run and walk.</p>',
+    rawStore: {
+      entries: JSON.stringify([
+        {
+          entryId: 'en|run',
+          term: 'run',
+          normalized: 'run',
+          sourceLang: 'en',
+          targetLang: 'zh-CN',
+          translation: '跑',
+          addedAt: 1,
+        },
+      ]),
+      settings: JSON.stringify({
+        version: 1,
+        lookupEnabled: true,
+        glossSites: { 'example.com': true },
+        targetOverrides: {},
+        disabledProviders: [],
+      }),
+    },
+  });
+
+  // The old settings still decide behaviour: glosses are on for this site.
+  await until(() => document.getElementById('t').textContent.includes('跑'));
+  const open = menu.find(([name]) => name.includes('生词本'));
+  open[1]();
+  await wait(50);
+  assert.match(
+    document.querySelector('[data-tm=panel-host]').shadowRoot.querySelector('.dialog').textContent,
+    /跑/,
+    'the old JSON book must still be listed',
+  );
+
+  // The first write replaces the old value with the new format.
+  menu.find(([name]) => name.includes('注音'))[1]();
+  assert.match(store.settings, /^section,key,value\r\n/, 'settings are rewritten as CSV');
+});
+
 test('a cached answer is not requested twice, including the dictionary call', async () => {
   const { window, document, requests } = boot({
     html: '<p id="t">I run every day.</p>',
@@ -706,7 +757,7 @@ test('forcing dark from the panel overrides a light system', async () => {
     DARK_BG,
     'the panel should repaint itself too',
   );
-  assert.equal(JSON.parse(store.settings).theme, 'dark', 'the choice must survive a reload');
+  assert.equal(STORAGE_CODECS.settings.decode(store.settings).theme, 'dark', 'the choice must survive a reload');
 });
 
 test('flipping the system preference repaints without a reload', () => {
@@ -893,7 +944,7 @@ test('the entry saved from a lookup carries no audio field', async () => {
   assert.ok(add, 'the entry should be savable');
   await until(() => Boolean(store.entries));
 
-  const [entry] = JSON.parse(store.entries);
+  const [entry] = STORAGE_CODECS.entries.decode(store.entries);
   assert.equal('audio' in entry, false, 'the recording URL is not part of an Entry');
 });
 

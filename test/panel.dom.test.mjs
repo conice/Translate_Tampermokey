@@ -9,11 +9,14 @@ import { createPanel } from '../src/ui/panel.js';
  * must be the scroll container, the dialog must cap itself against the box it
  * is laid out in rather than against `vh`, and the scroll must be visible.
  */
-function setup({ entries = [], theme = 'system' } = {}) {
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function setup({ entries = [], theme = 'system', fileIO, importError } = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
   const { document } = dom.window;
 
   const removed = [];
+  const importCalls = [];
   let store = entries.map((entry) => ({ ...entry }));
   const book = {
     all: () => store.slice(),
@@ -21,8 +24,12 @@ function setup({ entries = [], theme = 'system' } = {}) {
       removed.push(entryId);
       store = store.filter((entry) => entry.entryId !== entryId);
     },
-    exportJson: () => JSON.stringify(store),
-    importJson: () => ({ added: 0, updated: 0, skipped: 0 }),
+    exportCsv: () => 'term,normalized,sourceLang,targetLang,translation\r\n',
+    importCsv: (text, options) => {
+      importCalls.push({ text, options });
+      if (importError) throw new Error(importError);
+      return { added: 1, updated: 0, skipped: 0 };
+    },
   };
   const settings = {
     lookupEnabled: true,
@@ -44,8 +51,22 @@ function setup({ entries = [], theme = 'system' } = {}) {
     onClearCache() {},
     onLookupToggle() {},
     onThemeChange() {},
+    fileIO: fileIO ?? {
+      saveTextFile: async () => ({ saved: true, cancelled: false }),
+      pickTextFile: async () => null,
+    },
   });
-  return { document, panel, removed };
+  return { document, panel, removed, importCalls };
+}
+
+function openSettings(panel) {
+  const root = panel.host.shadowRoot;
+  [...root.querySelectorAll('.tabs button')].find((button) => button.textContent === '设置').click();
+  return root;
+}
+
+function button(root, label) {
+  return [...root.querySelectorAll('button')].find((candidate) => candidate.textContent === label);
 }
 
 function entry(index) {
@@ -164,4 +185,167 @@ test('deleting one entry leaves the rest, and the last one leaves the empty stat
   root.querySelector('ul.entries li button.danger').click();
   assert.equal(root.querySelectorAll('ul.entries li').length, 0);
   assert.match(root.querySelector('.empty').textContent, /还是空的/);
+});
+
+test('the replace-or-merge question is hidden until a file is chosen', async () => {
+  const { panel } = setup({ entries: [entry(1)] });
+  panel.open();
+  const root = openSettings(panel);
+
+  assert.match(
+    rule(css(panel), '[hidden] {'),
+    /display:\s*none\s*!important/,
+    'the UA rule loses to `.row { display: flex }`, so the panel needs its own',
+  );
+  assert.equal(
+    [...root.querySelectorAll('.row')].some((row) => /覆盖会先清空/.test(row.textContent) && !row.hidden),
+    false,
+  );
+});
+
+test('exporting the book writes a dated CSV file and reports the count', async () => {
+  const saves = [];
+  const { panel } = setup({
+    entries: [entry(1), entry(2)],
+    fileIO: {
+      saveTextFile: async (view, file) => {
+        saves.push(file);
+        return { saved: true, cancelled: false };
+      },
+      pickTextFile: async () => null,
+    },
+  });
+  panel.open();
+  const root = openSettings(panel);
+
+  button(root, '导出到文件').click();
+  await tick();
+
+  assert.equal(saves.length, 1);
+  assert.match(saves[0].filename, /^生词本-\d{4}-\d{2}-\d{2}\.csv$/);
+  assert.match(saves[0].text, /^term,normalized,sourceLang,targetLang,translation/);
+  assert.match(button(root, '导出到文件').closest('.row').textContent, /已导出 2 条/);
+});
+
+test('a cancelled save dialog says so instead of claiming success', async () => {
+  const { panel } = setup({
+    entries: [entry(1)],
+    fileIO: {
+      saveTextFile: async () => ({ saved: false, cancelled: true }),
+      pickTextFile: async () => null,
+    },
+  });
+  panel.open();
+  const root = openSettings(panel);
+
+  button(root, '导出到文件').click();
+  await tick();
+
+  assert.match(root.querySelector('.settings').textContent, /已取消导出/);
+});
+
+test('importing reads a file first, then asks whether to replace or merge', async () => {
+  const { panel, importCalls } = setup({
+    entries: [entry(1), entry(2)],
+    fileIO: {
+      saveTextFile: async () => ({ saved: true, cancelled: false }),
+      pickTextFile: async () => 'term,normalized,sourceLang,targetLang,translation\r\n',
+    },
+  });
+  panel.open();
+  const root = openSettings(panel);
+
+  button(root, '从文件导入').click();
+  await tick();
+  assert.equal(importCalls.length, 0, 'nothing may be imported before the user chooses');
+
+  const prompt = [...root.querySelectorAll('.row')].find((row) => /生词本现有 2 条/.test(row.textContent));
+  assert.ok(prompt, 'the choice must say how many entries are at stake');
+  assert.match(prompt.textContent, /覆盖会先清空/);
+
+  button(root, '合并').click();
+  assert.deepEqual(importCalls, [
+    { text: 'term,normalized,sourceLang,targetLang,translation\r\n', options: { mode: 'merge' } },
+  ]);
+  assert.match(root.querySelector('.settings').textContent, /导入完成:新增 1/);
+  assert.equal(prompt.hidden, true, 'the question goes away once answered');
+});
+
+test('choosing overwrite imports in replace mode', async () => {
+  const { panel, importCalls } = setup({
+    entries: [entry(1)],
+    fileIO: {
+      saveTextFile: async () => ({ saved: true, cancelled: false }),
+      pickTextFile: async () => 'csv text',
+    },
+  });
+  panel.open();
+  const root = openSettings(panel);
+
+  button(root, '从文件导入').click();
+  await tick();
+  button(root, '覆盖现有').click();
+
+  assert.deepEqual(importCalls, [{ text: 'csv text', options: { mode: 'replace' } }]);
+  assert.match(root.querySelector('.settings').textContent, /已覆盖:导入 1 条/);
+});
+
+test('a failed import reports the reason and puts the question away', async () => {
+  const { panel } = setup({
+    entries: [entry(1)],
+    importError: 'CSV 缺少列:translation',
+    fileIO: {
+      saveTextFile: async () => ({ saved: true, cancelled: false }),
+      pickTextFile: async () => 'bad csv',
+    },
+  });
+  panel.open();
+  const root = openSettings(panel);
+
+  button(root, '从文件导入').click();
+  await tick();
+  button(root, '覆盖现有').click();
+
+  assert.match(root.querySelector('.settings').textContent, /导入失败:CSV 缺少列:translation/);
+  assert.equal(
+    [...root.querySelectorAll('.row')].some((row) => /覆盖会先清空/.test(row.textContent) && !row.hidden),
+    false,
+    'a failed import must not leave the prompt on screen',
+  );
+});
+
+test('cancelling or dismissing the import changes nothing', async () => {
+  const { panel, importCalls } = setup({
+    entries: [entry(1)],
+    fileIO: {
+      saveTextFile: async () => ({ saved: true, cancelled: false }),
+      pickTextFile: async () => 'csv text',
+    },
+  });
+  panel.open();
+  const root = openSettings(panel);
+
+  button(root, '从文件导入').click();
+  await tick();
+  button(root, '取消').click();
+  assert.equal(importCalls.length, 0);
+  assert.match(root.querySelector('.settings').textContent, /已取消导入/);
+
+  // A dismissed file picker must not even show the replace/merge question.
+  const dismissed = setup({
+    entries: [entry(1)],
+    fileIO: {
+      saveTextFile: async () => ({ saved: true, cancelled: false }),
+      pickTextFile: async () => null,
+    },
+  });
+  dismissed.panel.open();
+  const otherRoot = openSettings(dismissed.panel);
+  button(otherRoot, '从文件导入').click();
+  await tick();
+  assert.equal(dismissed.importCalls.length, 0);
+  assert.equal(
+    [...otherRoot.querySelectorAll('.row')].some((row) => /覆盖会先清空/.test(row.textContent)),
+    false,
+  );
 });

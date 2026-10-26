@@ -46,7 +46,7 @@ const META = `// ==UserScript==
 `;
 
 const IMPORT_RE = /^import\s*(?:\{([^}]*)\}|(\w+))\s*from\s*['"]([^'"]+)['"]\s*;?[ \t]*$/gm;
-const EXPORT_DECL_RE = /^export\s+(?:async\s+)?(function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm;
+const EXPORT_DECL_RE = /^export\s+(async\s+)?(function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm;
 const EXPORT_LIST_RE = /^export\s*\{([^}]*)\}\s*;?[ \t]*$/gm;
 
 async function collect(file, seen, order) {
@@ -99,9 +99,12 @@ function transform(file, source, ids) {
     return '';
   });
 
-  code = code.replace(EXPORT_DECL_RE, (_full, kind, name) => {
+  code = code.replace(EXPORT_DECL_RE, (_full, isAsync, kind, name) => {
     exported.add(name);
-    return `${kind === 'function*' ? 'function*' : kind} ${name}`;
+    // `async` must survive the rewrite: dropping it leaves the awaits inside
+    // the function as a syntax error, and the whole bundle fails to parse.
+    const prefix = isAsync ? 'async ' : '';
+    return `${prefix}${kind === 'function*' ? 'function*' : kind} ${name}`;
   });
 
   const leftovers = code

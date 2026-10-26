@@ -6,6 +6,7 @@
  * reading and should not be one stray click away.
  */
 import { THEMES } from '../core/theme.js';
+import { CSV_ACCEPT, csvFilename, pickTextFile, saveTextFile } from '../app/file-io.js';
 
 /** How each theme reads in the settings control. UI text, so it lives here. */
 const THEME_LABELS = { system: '跟随系统', light: '浅色', dark: '深色' };
@@ -106,12 +107,10 @@ select.theme {
   padding: 6px 8px; border: 1px solid var(--tm-border, #ddd); border-radius: 7px;
   font: inherit; background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
-textarea {
-  width: 100%; box-sizing: border-box; min-height: 140px; font-family: ui-monospace, monospace;
-  font-size: 12px; border: 1px solid var(--tm-border, #ddd); border-radius: 8px; padding: 8px;
-  background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
-}
 .empty { color: var(--tm-muted, #999); padding: 24px 18px; text-align: center; }
+/* The UA sheet's [hidden] rule loses to any author display declaration, and
+   .row sets one; without this, a hidden row and a hidden button still paint. */
+[hidden] { display: none !important; }
 .settings { padding: 14px 18px; }
 .status { font-size: 12px; color: var(--tm-muted, #555); }
 
@@ -121,7 +120,7 @@ textarea {
   .close { padding: 10px 14px; }
   button.small, button.danger { padding: 9px 12px; font-size: 13px; }
   ul.entries li { padding: 11px 0; }
-  .search, textarea { font-size: 16px; } /* below 16px iOS zooms the page on focus */
+  .search { font-size: 16px; } /* below 16px iOS zooms the page on focus */
   .backdrop { padding: 8px; }
   .body::-webkit-scrollbar { width: 10px; }
   .toolbar { padding: 12px 14px 10px; }
@@ -142,6 +141,7 @@ export function createPanel({
   onThemeChange,
   lookupSwitchLabel = '双击取词',
   touch = false,
+  fileIO = { saveTextFile, pickTextFile },
 }) {
   const hostEl = document.createElement('div');
   hostEl.setAttribute('data-tm', 'panel-host');
@@ -367,41 +367,100 @@ export function createPanel({
     ioRow.className = 'row';
     const exportButton = document.createElement('button');
     exportButton.className = 'small';
-    exportButton.textContent = '导出 JSON';
+    exportButton.textContent = '导出到文件';
     const importButton = document.createElement('button');
     importButton.className = 'small';
-    importButton.textContent = '导入 JSON';
-    const importArea = document.createElement('textarea');
-    importArea.placeholder = '把导出的 JSON 粘贴到这里,然后点「确认导入」';
-    const importConfirm = document.createElement('button');
-    importConfirm.className = 'small';
-    importConfirm.textContent = '确认导入';
-    importConfirm.hidden = true;
+    importButton.textContent = '从文件导入';
     const ioStatus = document.createElement('span');
     ioStatus.className = 'status';
+    ioRow.append(exportButton, importButton, ioStatus);
 
-    exportButton.onclick = () => {
-      const json = book.exportJson();
-      importArea.value = json;
-      navigator.clipboard?.writeText(json).then(
-        () => (ioStatus.textContent = `已导出并复制 (${book.all().length} 条)`),
-        () => (ioStatus.textContent = '已导出到下方文本框'),
-      );
-    };
-    importButton.onclick = () => {
-      importConfirm.hidden = false;
-      importArea.focus();
-    };
-    importConfirm.onclick = () => {
+    /*
+     * Import replaces or merges, and only the user knows which one they want,
+     * so the file is read first and the choice is asked afterwards. Asking
+     * before choosing a file would put a modal in front of a cancelled dialog.
+     */
+    const importPrompt = document.createElement('div');
+    importPrompt.className = 'row';
+    importPrompt.hidden = true;
+    const importQuestion = document.createElement('span');
+    importQuestion.className = 'status';
+    const overwriteButton = document.createElement('button');
+    overwriteButton.className = 'small';
+    overwriteButton.textContent = '覆盖现有';
+    const mergeButton = document.createElement('button');
+    mergeButton.className = 'small';
+    mergeButton.textContent = '合并';
+    const cancelImportButton = document.createElement('button');
+    cancelImportButton.className = 'small';
+    cancelImportButton.textContent = '取消';
+    importPrompt.append(importQuestion, overwriteButton, mergeButton, cancelImportButton);
+
+    let pendingCsv = null;
+
+    function closeImportPrompt() {
+      pendingCsv = null;
+      importPrompt.hidden = true;
+    }
+
+    function runImport(mode) {
       try {
-        const report = book.importJson(importArea.value);
-        ioStatus.textContent = `导入完成:新增 ${report.added},更新 ${report.updated},跳过 ${report.skipped}`;
+        const report = book.importCsv(pendingCsv, { mode });
+        ioStatus.textContent =
+          mode === 'replace'
+            ? `已覆盖:导入 ${report.added} 条,跳过 ${report.skipped} 条`
+            : `导入完成:新增 ${report.added},更新 ${report.updated},跳过 ${report.skipped}`;
         onGlossChange?.();
       } catch (error) {
         ioStatus.textContent = `导入失败:${error.message}`;
+      } finally {
+        closeImportPrompt();
+      }
+    }
+
+    exportButton.onclick = async () => {
+      const count = book.all().length;
+      if (count === 0) {
+        ioStatus.textContent = '生词本是空的,没有可导出的内容';
+        return;
+      }
+      ioStatus.textContent = '正在导出…';
+      try {
+        const result = await fileIO.saveTextFile(document.defaultView ?? globalThis, {
+          filename: csvFilename(),
+          text: book.exportCsv(),
+        });
+        ioStatus.textContent = result?.cancelled ? '已取消导出' : `已导出 ${count} 条`;
+      } catch (error) {
+        ioStatus.textContent = `导出失败:${error.message}`;
       }
     };
-    ioRow.append(exportButton, importButton, importConfirm, ioStatus);
+
+    importButton.onclick = async () => {
+      ioStatus.textContent = '';
+      let text;
+      try {
+        text = await fileIO.pickTextFile(document, { accept: CSV_ACCEPT });
+      } catch (error) {
+        ioStatus.textContent = `读取文件失败:${error.message}`;
+        return;
+      }
+      if (text === null || text === undefined) return; // picker dismissed
+      pendingCsv = text;
+      const existing = book.all().length;
+      importQuestion.textContent =
+        existing === 0
+          ? '生词本当前为空,导入会加入文件里的词条。'
+          : `生词本现有 ${existing} 条:合并会保留它们,覆盖会先清空再导入。`;
+      importPrompt.hidden = false;
+    };
+
+    overwriteButton.onclick = () => runImport('replace');
+    mergeButton.onclick = () => runImport('merge');
+    cancelImportButton.onclick = () => {
+      closeImportPrompt();
+      ioStatus.textContent = '已取消导入';
+    };
 
     const cacheRow = document.createElement('div');
     cacheRow.className = 'row';
@@ -421,7 +480,7 @@ export function createPanel({
       targetRow,
       document.createElement('hr'),
       ioRow,
-      importArea,
+      importPrompt,
       cacheRow,
       helpText(),
     );

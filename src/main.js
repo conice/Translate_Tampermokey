@@ -7,7 +7,7 @@
 import { pageLanguage, resolveTarget } from './core/lang.js';
 import { normalizeTerm } from './core/normalize.js';
 import { dictionaryDev, freedictionary, createTranslator } from './core/providers.js';
-import { createSettings, createBook, createLookupCache, createGmStorage } from './app/storage.js';
+import { createSettings, createBook, createLookupCache } from './app/storage.js';
 import { createLookupFlow, addEntry } from './app/lookup-flow.js';
 import { createPronouncer } from './app/pronunciation.js';
 import { createPopup } from './ui/popup.js';
@@ -74,7 +74,7 @@ const fetchText = (url) => request(url);
 /** A pronunciation recording, as bytes: the text-shaped call cannot carry it. */
 const fetchBlob = (url) => request(url, { binary: true });
 
-const settings = createSettings(createGmStorage('settings', gm));
+const settings = createSettings(gm);
 const book = createBook(gm);
 const cache = createLookupCache(gm);
 
