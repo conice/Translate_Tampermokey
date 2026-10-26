@@ -5,9 +5,9 @@ import { createPanel } from '../src/ui/panel.js';
 
 /**
  * jsdom has no layout, so nothing here can prove the dialog fits on a phone.
- * What it can do is pin the two things that made a long book unreadable: the
- * list must be the scroll container, and the dialog must cap itself against the
- * viewport that is actually on screen. The rest is ordinary list behaviour.
+ * What it can do is pin the rules that made a long book unreadable: the list
+ * must be the scroll container, the dialog must cap itself against the box it
+ * is laid out in rather than against `vh`, and the scroll must be visible.
  */
 function setup({ entries = [], theme = 'system' } = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
@@ -65,6 +65,13 @@ function css(panel) {
   return panel.host.shadowRoot.querySelector('style').textContent;
 }
 
+/** One rule's declarations, so an assertion cannot match a neighbour's. */
+function rule(style, selector) {
+  const start = style.indexOf(selector);
+  assert.notEqual(start, -1, `missing rule ${selector}`);
+  return style.slice(start, style.indexOf('}', start));
+}
+
 test('a long book is listed in full inside a body that can scroll', () => {
   const { panel } = setup({ entries: Array.from({ length: 300 }, (_, i) => entry(i)) });
   panel.open();
@@ -73,10 +80,38 @@ test('a long book is listed in full inside a body that can scroll', () => {
   assert.equal(root.querySelectorAll('ul.entries li').length, 300);
 
   const style = css(panel);
-  const body = style.slice(style.indexOf('.body {'), style.indexOf('.toolbar {'));
+  const body = rule(style, '.body {');
   assert.match(body, /min-height:\s*0/, 'without this a flex item cannot shrink, so the list never scrolls');
   assert.match(body, /overflow-y:\s*auto/);
-  assert.match(style, /100dvh/, 'the cap must follow the visible viewport, not the large one');
+  assert.match(rule(style, '.dialog {'), /max-height:\s*min\(640px,\s*100%\)/,
+    'the cap must be a share of the box the dialog is laid out in, not of vh');
+  assert.match(body, /scrollbar-width:\s*thin/, 'a phone otherwise shows nothing until you drag');
+  assert.match(style, /\.body::-webkit-scrollbar-thumb \{[^}]*background:/, 'Chrome needs its own scrollbar rule');
+});
+
+test('the dialog cannot overflow the backdrop that holds it', () => {
+  const { panel } = setup();
+  panel.open();
+
+  const style = css(panel);
+  const backdrop = rule(style, '.backdrop {');
+  assert.match(backdrop, /padding:\s*16px/, 'the gutter belongs to the box the dialog is capped against');
+  assert.match(backdrop, /box-sizing:\s*border-box/, 'otherwise the padding is added on top of the cap');
+  assert.match(backdrop, /align-items:\s*safe center/,
+    'a dialog that does overflow must lose its bottom, not its title and close button');
+  assert.match(style, /\.backdrop \{[^}]*padding:\s*8px/, 'a phone keeps only a thin gutter');
+});
+
+test('the header stays outside the scrolling area', () => {
+  const { panel } = setup({ entries: Array.from({ length: 40 }, (_, i) => entry(i)) });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  const dialog = root.querySelector('.dialog');
+  assert.equal(dialog.querySelector('header').parentElement, dialog);
+  assert.equal(root.querySelector('.body').parentElement, dialog);
+  assert.equal(dialog.querySelector('header').nextElementSibling, root.querySelector('.body'));
+  assert.ok(dialog.querySelector('.close'), 'the close button must not scroll away with the list');
 });
 
 test('the search box is pinned above the list it filters', () => {

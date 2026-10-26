@@ -13,22 +13,31 @@ const THEME_LABELS = { system: '跟随系统', light: '浅色', dark: '深色' }
 const STYLE = `
 :host { all: initial; }
 .backdrop {
+  /* padding + border-box, rather than margins carved out of the dialog's own
+     width and height: the dialog below then sizes itself as a percentage of
+     this box, and the two cannot disagree about how much room there is. */
   position: fixed; inset: 0; z-index: 2147483646;
+  box-sizing: border-box; padding: 16px;
   background: rgba(0,0,0,.35);
-  display: flex; align-items: center; justify-content: center;
+  display: flex;
+  /* "safe" falls back to flex-start when the dialog is taller than the box, so
+     the title, the tabs and the close button stay on screen instead of being
+     pushed off both ends by centring. */
+  align-items: center; align-items: safe center;
+  justify-content: center;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
         "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   color: var(--tm-fg, #1a1a1a);
 }
 .dialog {
-  width: min(720px, calc(100vw - 32px));
-  /* vh is the *large* viewport: on a phone it stays the height of the window
-     even while the browser chrome is showing. A book long enough to reach the
-     cap would then be taller than the screen, and centring a too-tall box would
-     put the title under the status bar and the last rows under the toolbar.
-     dvh shrinks with the chrome; the vh line is the fallback. */
-  max-height: min(640px, calc(100vh - 48px));
-  max-height: min(640px, calc(100dvh - 48px));
+  width: min(720px, 100%);
+  /* A percentage of the backdrop, not vh. On a phone the fixed box, the
+     visible viewport and vh can each mean something different: vh ignores the
+     browser chrome, and a pinch-zoom shrinks what is visible without
+     shrinking the box. Measuring against the very box the dialog is laid out in
+     is the only cap that always matches what the user can see; it is what kept
+     a long book from pushing the title under the status bar. */
+  max-height: min(640px, 100%);
   background: var(--tm-bg, #fff); border-radius: 14px; overflow: hidden;
   display: flex; flex-direction: column;
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
@@ -53,6 +62,17 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
   flex: 1 1 auto; min-height: 0;
   overflow-y: auto; overscroll-behavior: contain;
   padding: 0;
+  /* A visible scrollbar, not the phone's hit-and-miss overlay one: with a few
+     hundred entries there is otherwise nothing on screen saying the list goes
+     on below the fold. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--tm-muted, #8a8a8a) transparent;
+}
+.body::-webkit-scrollbar { width: 8px; }
+.body::-webkit-scrollbar-track { background: transparent; }
+.body::-webkit-scrollbar-thumb {
+  background: var(--tm-muted, #8a8a8a); border-radius: 8px;
+  border: 2px solid var(--tm-bg, #fff); /* thins the thumb without a second colour */
 }
 .toolbar {
   /* The search box outlives the scroll. With a few hundred entries, scrolling
@@ -102,7 +122,8 @@ textarea {
   button.small, button.danger { padding: 9px 12px; font-size: 13px; }
   ul.entries li { padding: 11px 0; }
   .search, textarea { font-size: 16px; } /* below 16px iOS zooms the page on focus */
-  .dialog { width: calc(100vw - 16px); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
+  .backdrop { padding: 8px; }
+  .body::-webkit-scrollbar { width: 10px; }
   .toolbar { padding: 12px 14px 10px; }
   ul.entries { padding: 0 14px; }
   .empty { padding: 24px 14px; }
