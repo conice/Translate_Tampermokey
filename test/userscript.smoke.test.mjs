@@ -14,13 +14,27 @@ import { JSDOM } from 'jsdom';
  */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * The exact colour values the script ships. They are asserted as literals
+ * rather than imported, so a test failure means the palette changed, not that
+ * a constant was renamed.
+ *
+ * jsdom resolves neither `var()` nor custom properties inside a shadow root,
+ * so a surface's painted colour is not observable here. The assertions below
+ * therefore check two proxies that together pin the behaviour: the palette
+ * reached the host, and the surface's own stylesheet reads those names.
+ */
+const LIGHT_BG = '#ffffff';
+const DARK_BG = '#1c1c1e';
+const DARK_FG = '#f2f2f7';
+
 function build() {
   execFileSync(process.execPath, [resolve(ROOT, 'build.mjs')], { cwd: ROOT });
   return readFileSync(resolve(ROOT, 'dist/translate-tampermokey.user.js'), 'utf8');
 }
 
 /** A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP. */
-function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false }) {
+function boot({ url = 'https://example.com/article', html, settings, entries, responses = {}, touch = false, prefersDark = false }) {
   const dom = new JSDOM(`<!doctype html><html lang="en"><body>${html}</body></html>`, {
     url,
     pretendToBeVisual: true,
@@ -33,6 +47,10 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
 
   const requests = [];
   const menu = [];
+  // jsdom has no media-event plumbing: the dark-mode watcher's listeners are
+  // kept here so a test can flip the OS preference mid-page.
+  let dark = prefersDark;
+  const darkListeners = new Set();
 
   window.IntersectionObserver = class {
     observe() {}
@@ -40,7 +58,27 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
   };
   // jsdom ships neither matchMedia nor maxTouchPoints; the touch branch of the
   // script keys off exactly these, so a test opts in here.
-  window.matchMedia = (query) => ({ matches: touch && query === '(pointer: coarse)', media: query });
+  window.matchMedia = (query) => {
+    if (query === '(prefers-color-scheme: dark)') {
+      return {
+        get matches() {
+          return dark;
+        },
+        media: query,
+        addEventListener: (type, fn) => {
+          if (type === 'change') darkListeners.add(fn);
+        },
+        removeEventListener: (type, fn) => {
+          if (type === 'change') darkListeners.delete(fn);
+        },
+      };
+    }
+    return { matches: touch && query === '(pointer: coarse)', media: query, addEventListener() {}, removeEventListener() {} };
+  };
+  const setPrefersDark = (next) => {
+    dark = next;
+    for (const fn of darkListeners) fn({ matches: next, media: '(prefers-color-scheme: dark)' });
+  };
   Object.defineProperty(window.navigator, 'maxTouchPoints', { value: touch ? 5 : 0, configurable: true });
   window.Element.prototype.getBoundingClientRect = () => ({
     top: 0,
@@ -71,7 +109,7 @@ function boot({ url = 'https://example.com/article', html, settings, entries, re
   };
 
   window.eval(build());
-  return { window, document: window.document, store, requests, menu, dom };
+  return { window, document: window.document, store, requests, menu, dom, setPrefersDark };
 }
 
 function selectAndDoubleClick(window, element, start, end) {
@@ -438,4 +476,125 @@ test('turning lookup off from the panel stops double-click lookups', async () =>
   selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
   await wait(120);
   assert.equal(requests.length, 0, 'no lookup should be attempted while disabled');
+});
+
+test('a dark system paints all three surfaces dark', async () => {
+  const { window, document } = boot({
+    html: '<p id="t">I run every day.</p>',
+    responses: { clients5: [200, [['跑', 'en']]] },
+    touch: true,
+    prefersDark: true,
+  });
+
+  const hosts = ['popup-host', 'bubble-host', 'panel-host'].map((name) =>
+    document.querySelector(`[data-tm=${name}]`),
+  );
+  for (const host of hosts) {
+    assert.ok(host, 'every surface should be mounted');
+    assert.equal(
+      window.getComputedStyle(host).getPropertyValue('--tm-bg').trim(),
+      DARK_BG,
+      `${host.getAttribute('data-tm')} should use the dark background`,
+    );
+  }
+
+  touchSelect(window, document.getElementById('t'), 2, 5);
+  await until(() => bubbleHost(document).hidden === false);
+  assert.equal(
+    window.getComputedStyle(bubbleHost(document)).getPropertyValue('--tm-fg').trim(),
+    DARK_FG,
+    'the bubble must not be the one surface left light',
+  );
+});
+
+test('a light system paints the surfaces light', () => {
+  const { window, document } = boot({ html: '<p>hello</p>', prefersDark: false });
+  const host = document.querySelector('[data-tm=popup-host]');
+  assert.equal(window.getComputedStyle(host).getPropertyValue('--tm-bg').trim(), LIGHT_BG);
+});
+
+test('forcing dark from the panel overrides a light system', async () => {
+  const { window, document, menu, store } = boot({ html: '<p>hello</p>', prefersDark: false });
+  menu.find(([name]) => name.includes('生词本'))[1]();
+  await wait(30);
+
+  const panel = document.querySelector('[data-tm=panel-host]');
+  const settingsTab = [...panel.shadowRoot.querySelectorAll('.tabs button')].find((b) => b.textContent === '设置');
+  settingsTab.click();
+  await wait(20);
+
+  const select = panel.shadowRoot.querySelector('select.theme');
+  assert.ok(select, 'the settings page needs a theme control');
+  select.value = 'dark';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await wait(20);
+
+  assert.equal(
+    window.getComputedStyle(document.querySelector('[data-tm=popup-host]')).getPropertyValue('--tm-bg').trim(),
+    DARK_BG,
+    'the popup should follow the forced theme, not the system one',
+  );
+  assert.equal(
+    window.getComputedStyle(panel).getPropertyValue('--tm-bg').trim(),
+    DARK_BG,
+    'the panel should repaint itself too',
+  );
+  assert.equal(JSON.parse(store.settings).theme, 'dark', 'the choice must survive a reload');
+});
+
+test('flipping the system preference repaints without a reload', () => {
+  const { window, document, setPrefersDark } = boot({ html: '<p>hello</p>', prefersDark: false });
+  const host = document.querySelector('[data-tm=popup-host]');
+  assert.equal(window.getComputedStyle(host).getPropertyValue('--tm-bg').trim(), LIGHT_BG);
+
+  setPrefersDark(true);
+  assert.equal(
+    window.getComputedStyle(host).getPropertyValue('--tm-bg').trim(),
+    DARK_BG,
+    'the surfaces should follow the OS without a reload',
+  );
+});
+
+test('a forced theme ignores the system preference flipping', () => {
+  const { window, document, setPrefersDark } = boot({
+    html: '<p>hello</p>',
+    prefersDark: false,
+    settings: {
+      version: 1,
+      lookupEnabled: true,
+      glossSites: {},
+      targetOverrides: {},
+      disabledProviders: [],
+      theme: 'light',
+    },
+  });
+  const host = document.querySelector('[data-tm=popup-host]');
+  setPrefersDark(true);
+  assert.equal(
+    window.getComputedStyle(host).getPropertyValue('--tm-bg').trim(),
+    LIGHT_BG,
+    'a forced theme must not be overridden by the system',
+  );
+});
+
+test('every surface paints from the shared theme variables', () => {
+  const { document } = boot({ html: '<p>hello</p>', touch: true });
+  // The Bubble is a solid accent pill, so it reads the accent pair rather than
+  // the panel's background/foreground pair.
+  const expected = {
+    'popup-host': ['--tm-bg', '--tm-fg'],
+    'panel-host': ['--tm-bg', '--tm-fg'],
+    'bubble-host': ['--tm-accent', '--tm-accent-fg'],
+  };
+  for (const [name, tokens] of Object.entries(expected)) {
+    const host = document.querySelector(`[data-tm=${name}]`);
+    const css = [...host.shadowRoot.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+    for (const token of tokens) {
+      assert.match(
+        css,
+        new RegExp(`var\\(\\s*${token}`),
+        `${name} must read ${token} rather than hard-code a colour`,
+      );
+    }
+  }
 });

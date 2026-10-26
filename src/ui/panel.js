@@ -5,6 +5,10 @@
  * panel is opened from the userscript menu, because it is not part of normal
  * reading and should not be one stray click away.
  */
+import { THEMES } from '../core/theme.js';
+
+/** How each theme reads in the settings control. UI text, so it lives here. */
+const THEME_LABELS = { system: '跟随系统', light: '浅色', dark: '深色' };
 
 const STYLE = `
 :host { all: initial; }
@@ -14,54 +18,60 @@ const STYLE = `
   display: flex; align-items: center; justify-content: center;
   font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
         "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  color: #1a1a1a;
+  color: var(--tm-fg, #1a1a1a);
 }
 .dialog {
   width: min(720px, calc(100vw - 32px));
   max-height: min(640px, calc(100vh - 48px));
-  background: #fff; border-radius: 14px; overflow: hidden;
+  background: var(--tm-bg, #fff); border-radius: 14px; overflow: hidden;
   display: flex; flex-direction: column;
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
 }
 header {
   display: flex; align-items: center; gap: 12px;
-  padding: 14px 18px; border-bottom: 1px solid #ececec;
+  padding: 14px 18px; border-bottom: 1px solid var(--tm-border, #ececec);
 }
 h1 { font-size: 16px; margin: 0; font-weight: 600; }
 .tabs { display: flex; gap: 4px; margin-left: auto; }
 .tabs button {
   all: unset; cursor: pointer; padding: 5px 10px; border-radius: 7px;
-  color: #555; font-size: 13px;
+  color: var(--tm-muted, #555); font-size: 13px;
 }
-.tabs button[aria-selected="true"] { background: #eef2ff; color: #1d4ed8; }
-.close { all: unset; cursor: pointer; color: #888; padding: 4px 8px; font-size: 18px; }
+.tabs button[aria-selected="true"] { background: var(--tm-hover, #eef2ff); color: var(--tm-accent, #1d4ed8); }
+.close { all: unset; cursor: pointer; color: var(--tm-muted, #888); padding: 4px 8px; font-size: 18px; }
 .body { padding: 14px 18px; overflow: auto; }
 .search {
   width: 100%; box-sizing: border-box; padding: 8px 10px; margin-bottom: 10px;
-  border: 1px solid #ddd; border-radius: 8px; font: inherit;
+  border: 1px solid var(--tm-border, #ddd); border-radius: 8px; font: inherit;
+  background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
 ul.entries { list-style: none; margin: 0; padding: 0; }
 ul.entries li {
   display: flex; gap: 10px; align-items: baseline;
-  padding: 8px 0; border-bottom: 1px solid #f2f2f2;
+  padding: 8px 0; border-bottom: 1px solid var(--tm-border, #f2f2f2);
 }
 .term { font-weight: 600; }
-.meta { color: #8a8a8a; font-size: 12px; }
-.translation { margin-left: auto; color: #333; }
-button.danger { all: unset; cursor: pointer; color: #b91c1c; font-size: 12px; padding: 2px 6px; }
+.meta { color: var(--tm-muted, #8a8a8a); font-size: 12px; }
+.translation { margin-left: auto; color: var(--tm-fg, #333); opacity: .82; }
+button.danger { all: unset; cursor: pointer; color: var(--tm-danger, #b91c1c); font-size: 12px; padding: 2px 6px; }
 button.small {
-  all: unset; cursor: pointer; border: 1px solid #ddd; border-radius: 7px;
-  padding: 4px 10px; font-size: 12px;
+  all: unset; cursor: pointer; border: 1px solid var(--tm-border, #ddd); border-radius: 7px;
+  padding: 4px 10px; font-size: 12px; color: var(--tm-fg, #1a1a1a);
 }
-button.small:hover { background: #f7f7f7; }
+button.small:hover { background: var(--tm-hover, #f7f7f7); }
 .row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
 label.switch { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+select.theme {
+  padding: 6px 8px; border: 1px solid var(--tm-border, #ddd); border-radius: 7px;
+  font: inherit; background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
+}
 textarea {
   width: 100%; box-sizing: border-box; min-height: 140px; font-family: ui-monospace, monospace;
-  font-size: 12px; border: 1px solid #ddd; border-radius: 8px; padding: 8px;
+  font-size: 12px; border: 1px solid var(--tm-border, #ddd); border-radius: 8px; padding: 8px;
+  background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
-.empty { color: #999; padding: 24px 0; text-align: center; }
-.status { font-size: 12px; color: #555; }
+.empty { color: var(--tm-muted, #999); padding: 24px 0; text-align: center; }
+.status { font-size: 12px; color: var(--tm-muted, #555); }
 
 /* Finger-sized hit areas; the desktop sizes assume a mouse. */
 @media (pointer: coarse) {
@@ -83,6 +93,7 @@ export function createPanel({
   onGlossChange,
   onClearCache,
   onLookupToggle,
+  onThemeChange,
   lookupSwitchLabel = '双击取词',
   touch = false,
 }) {
@@ -239,6 +250,25 @@ export function createPanel({
     lookupLabel.append(lookupBox, document.createTextNode(lookupSwitchLabel));
     lookupRow.append(lookupLabel);
 
+    const themeRow = document.createElement('div');
+    themeRow.className = 'row';
+    const themeLabel = document.createElement('span');
+    themeLabel.textContent = '外观:';
+    const themeSelect = document.createElement('select');
+    themeSelect.className = 'theme';
+    for (const value of THEMES) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = THEME_LABELS[value];
+      themeSelect.append(option);
+    }
+    themeSelect.value = settings.theme;
+    themeSelect.onchange = () => {
+      settings.setTheme(themeSelect.value);
+      onThemeChange?.();
+    };
+    themeRow.append(themeLabel, themeSelect);
+
     const glossRow = document.createElement('div');
     glossRow.className = 'row';
     const glossLabel = document.createElement('label');
@@ -260,7 +290,9 @@ export function createPanel({
     const targetInput = document.createElement('input');
     targetInput.placeholder = '自动(如 zh-CN / en / ja)';
     targetInput.value = settings.targetOverride(host) ?? '';
-    targetInput.style.cssText = 'padding:6px 8px;border:1px solid #ddd;border-radius:7px;font:inherit;width:180px;';
+    targetInput.style.cssText =
+      'padding:6px 8px;border:1px solid var(--tm-border,#ddd);border-radius:7px;font:inherit;width:180px;' +
+      'background:var(--tm-bg,#fff);color:var(--tm-fg,#1a1a1a);';
     const targetSave = document.createElement('button');
     targetSave.className = 'small';
     targetSave.textContent = '保存';
@@ -325,6 +357,7 @@ export function createPanel({
 
     wrap.append(
       lookupRow,
+      themeRow,
       glossRow,
       targetRow,
       document.createElement('hr'),
@@ -353,6 +386,7 @@ export function createPanel({
     get isOpen() {
       return !hostEl.hidden;
     },
+    host: hostEl,
     destroy() {
       hostEl.remove();
     },

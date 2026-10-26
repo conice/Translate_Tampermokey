@@ -1,5 +1,6 @@
 import { createStore } from '../core/store.js';
 import { createCache } from '../core/cache.js';
+import { normalizeTheme } from '../core/theme.js';
 
 const SETTINGS_KEY = 'settings';
 const ENTRIES_KEY = 'entries';
@@ -15,6 +16,8 @@ const DEFAULTS = {
   targetOverrides: {},
   /** Provider ids the user disabled. */
   disabledProviders: [],
+  /** 'system' follows the OS; 'light' / 'dark' force a theme on every surface. */
+  theme: 'system',
 };
 
 /**
@@ -81,6 +84,13 @@ export function createSettings(storage) {
     },
     disabledProviders() {
       return [...values.disabledProviders];
+    },
+    get theme() {
+      return normalizeTheme(values.theme);
+    },
+    setTheme(theme) {
+      values.theme = normalizeTheme(theme);
+      persist();
     },
   };
 }

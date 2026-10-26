@@ -12,6 +12,8 @@ import { createPopup } from './ui/popup.js';
 import { createBubble } from './ui/bubble.js';
 import { createGlossLayer } from './ui/gloss-layer.js';
 import { createPanel } from './ui/panel.js';
+import { applyPalette } from './ui/palette.js';
+import { resolveTheme } from './core/theme.js';
 import { isTouchPrimary, shouldOfferBubble, selectionTerm, isOwnSelection } from './core/gesture.js';
 
 const gm = {
@@ -191,8 +193,48 @@ const panel = createPanel({
     }
   },
   lookupSwitchLabel: touchPrimary ? '选词后点「译」查询' : '双击取词',
+  onThemeChange: () => applyTheme(),
   touch: touchPrimary,
 });
+
+/**
+ * Paint every floating surface for the current theme.
+ *
+ * The palette lives on each shadow host rather than inside the shadow roots so
+ * one theme decision reaches all three surfaces, including the Bubble, which
+ * has no other reason to know about settings.
+ */
+function applyTheme() {
+  const theme = resolveTheme({
+    setting: settings.theme,
+    prefersDark: prefersDarkQuery()?.matches ?? false,
+  });
+  for (const surface of [popup, bubble, panel]) {
+    if (surface?.host) applyPalette(surface.host, theme);
+  }
+}
+
+let darkQuery;
+let darkQueryResolved = false;
+
+/** The OS preference query, looked up once; absent in environments without matchMedia. */
+function prefersDarkQuery() {
+  if (darkQueryResolved) return darkQuery;
+  darkQueryResolved = true;
+  try {
+    darkQuery = window.matchMedia?.('(prefers-color-scheme: dark)') ?? undefined;
+  } catch {
+    darkQuery = undefined;
+  }
+  return darkQuery;
+}
+
+applyTheme();
+// The OS can flip while the page is open; the surfaces follow without a reload.
+// Older Safari only has addListener, hence the two spellings.
+const darkMedia = prefersDarkQuery();
+if (darkMedia?.addEventListener) darkMedia.addEventListener('change', applyTheme);
+else darkMedia?.addListener?.(applyTheme);
 
 const flow = createLookupFlow({
   popup,

@@ -21,8 +21,8 @@ const STYLE = `
   width: 40px;
   height: 40px;
   border-radius: 20px;
-  background: #2563eb;
-  color: #fff;
+  background: var(--tm-accent, #2563eb);
+  color: var(--tm-accent-fg, #fff);
   font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
         "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   box-shadow: 0 4px 14px rgba(0,0,0,.28);
@@ -174,5 +174,6 @@ export function createBubble({ document, window, onTap }) {
     show,
     hide,
     contains,
+    host,
   };
 }
