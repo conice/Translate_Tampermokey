@@ -251,6 +251,20 @@ test('a word the dictionaries cannot help with shows no selector at all', () => 
   assert.equal(wrap.querySelector('button[data-dict]'), null);
 });
 
+test('a language with one dictionary shows its meanings without a dead switch row', () => {
+  const { popup, wrap } = setup();
+  popup.render(word({
+    term: '사과',
+    dictionaryId: 'krdict',
+    dictionaryChoices: [['krdict', '韩国语学习词典']],
+    dictionaryStatus: 'ok',
+    meanings: [{ pos: '名词', definition: '苹果' }],
+  }));
+
+  assert.equal(wrap.querySelector('.dict'), null, 'one logo is a control that cannot do anything');
+  assert.match(wrap.querySelector('.meanings').textContent, /苹果/);
+});
+
 test('a sentence result has no dictionary row even if its state names one', () => {
   const { popup, wrap } = setup();
   popup.render(sentence({ dictionaryId: 'youdao' }));

@@ -41,6 +41,24 @@ test('the built header carries the version package.json declares', () => {
   assert.equal(header[1], pkg.version, 'a release must not bump two places');
 });
 
+test('the built header lets the script reach every dictionary and recording host', () => {
+  const header = build();
+  for (const host of [
+    'dict.youdao.com',
+    'cn.bing.com',
+    'dict.eudic.net',
+    'krdict.korean.go.kr',
+    // The Korean recordings live on a different host from the dictionary page.
+    'krdicmedia.korean.go.kr',
+  ]) {
+    assert.match(
+      header,
+      new RegExp(`^// @connect\\s+${host.replace(/[.]/gu, '\\.')}$`, 'mu'),
+      `Tampermonkey would block ${host} without an @connect line`,
+    );
+  }
+});
+
 /**
  * A Tampermonkey-ish sandbox with seeded GM storage and stubbed HTTP.
  *
@@ -732,6 +750,47 @@ test('switching the dictionary in the Popup refetches meanings and leaves the de
   assert.match(store.settings, /^general,dictionary,youdao$/m,
     'a temporary choice must not rewrite the setting');
   assert.doesNotMatch(store.settings, /general,dictionary,microsoft/);
+});
+
+test('a Korean word is answered by the Korean dictionary, with no English lookup along the way', async () => {
+  const koreanPage = `
+    <div class="search_result">
+      <dl>
+        <dt><span class="word_type1_17">사과 <sup>1</sup></span>
+          <span class="word_att_type1">「명사」<span class="manyLang11">名词</span></span>
+          <span class="search_sub"><span class="search_sub">[사과<a href="javascript:fnSoundPlay('https://krdicmedia.korean.go.kr/x.mp3');" class="sound">듣기</a>]</span></span>
+        </dt>
+        <dd class="manyLang11 ">苹果</dd>
+        <dd class="manyLang11 ml20">圆而红、味道酸甜的水果。</dd>
+      </dl>
+    </div>`;
+  const { window, document, requests } = boot({
+    html: '<p id="t">사과</p>',
+    responses: {
+      clients5: [200, [['苹果', 'ko']]],
+      'krdict.korean.go.kr': [200, koreanPage],
+    },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 0, 2);
+
+  assert.ok(await until(() => /名词/.test(popupText(document))), 'the Korean meanings should arrive');
+  const text = popupText(document);
+  assert.match(text, /苹果/);
+  assert.match(text, /圆而红|名词/);
+  assert.ok(
+    requests.some((url) => new URL(url).hostname === 'krdict.korean.go.kr'),
+    'the Korean word goes to the Korean dictionary',
+  );
+  assert.equal(
+    requests.some((url) => new URL(url).hostname === 'freedictionaryapi.com'),
+    false,
+    'an English base-form service has nothing to say about a Korean word',
+  );
+  assert.equal(
+    document.querySelector('[data-tm=popup-host]').shadowRoot.querySelectorAll('button.logo').length,
+    0,
+    'one source for the language needs no switch row',
+  );
 });
 
 test('turning glosses on from the menu annotates, and off again restores the page', async () => {

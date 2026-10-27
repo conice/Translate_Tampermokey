@@ -1,16 +1,24 @@
 /**
- * Dictionary Sources: phonetic, audio and meanings for one English word.
+ * Dictionary Sources: phonetic, audio and meanings for one word.
  *
  * A Dictionary Source is deliberately separate from a translation Provider
  * (see ADR-0010). Translation must keep working even when a dictionary page
  * changes shape; every parser here returns `undefined` rather than throwing
  * when it cannot recognize the answer.
  *
+ * Each source declares the one Source Language it serves. A word is only sent
+ * to a dictionary written for its language: an English word to an English-
+ * Chinese dictionary, a Korean word to the Korean-Chinese one. Sending `run`
+ * to a Korean dictionary would spend a request and get an empty page back.
+ *
  * Shapes, as measured on 2026-10-27:
  * - Youdao answers the undocumented `jsonapi` endpoint as JSON.
  * - Microsoft and Eudic have no public JSON endpoint; their web pages are
  *   parsed. Both pages are large and their markup can change without notice.
+ * - krdict has no public JSON endpoint without a key either; its Chinese
+ *   search page is parsed, and only exact headword matches are used.
  */
+import { normalizeLangTag } from './lang.js';
 import { dictionaryDev } from './providers.js';
 
 /** How much of one part-of-speech definition the Popup shows. */
@@ -97,6 +105,7 @@ function splitYoudaoMeaning(text) {
 export const youdao = {
   id: 'youdao',
   label: '有道词典',
+  lang: 'en',
   request({ word }) {
     const dicts = encodeURIComponent(JSON.stringify({ count: 1, dicts: [['ec'], ['simple']] }));
     return `https://dict.youdao.com/jsonapi?q=${encodeURIComponent(word)}&dicts=${dicts}`;
@@ -172,6 +181,7 @@ function bingAudio(html) {
 export const microsoft = {
   id: 'microsoft',
   label: '微软词典',
+  lang: 'en',
   request({ word }) {
     return `https://cn.bing.com/dict/search?q=${encodeURIComponent(word)}`;
   },
@@ -209,9 +219,13 @@ export const microsoft = {
   },
 };
 
-function hasClass(attributes, name) {
+function classTokens(attributes) {
   const raw = /class\s*=\s*["']([^"']*)["']/iu.exec(attributes)?.[1] ?? '';
-  return raw.split(/\s+/u).includes(name);
+  return raw.split(/\s+/u).filter(Boolean);
+}
+
+function hasClass(attributes, name) {
+  return classTokens(attributes).includes(name);
 }
 
 function eudicPhonetic(html) {
@@ -273,6 +287,7 @@ function eudicMeanings(child) {
 export const eudic = {
   id: 'eudic',
   label: '欧陆词典',
+  lang: 'en',
   request({ word }) {
     return `https://dict.eudic.net/dicts/en/${encodeURIComponent(word)}`;
   },
@@ -287,17 +302,143 @@ export const eudic = {
   },
 };
 
-/** The existing English-English source, kept as a fourth choice. */
-const englishDictionary = { ...dictionaryDev, label: '英英词典' };
+/**
+ * National Institute of Korean Language. The Chinese edition of krdict lists
+ * one <dl> per homograph and one <dd> per sense; the Chinese translation sits
+ * in a `manyLang11` cell and the Chinese explanation adds `ml20`.
+ *
+ * The page is a search result, so it also lists words that merely contain the
+ * query. Only the exact headword is used, superscript homograph numbers
+ * included in the comparison.
+ */
+export const krdict = {
+  id: 'krdict',
+  label: '韩国语学习词典',
+  lang: 'ko',
+  request({ word }) {
+    return `https://krdict.korean.go.kr/chn/dicMarinerSearch/search?mainSearchWord=${encodeURIComponent(word)}`;
+  },
+  parse(html, { word } = {}) {
+    if (typeof html !== 'string') return undefined;
+    const wanted = String(word ?? '').trim();
+    const matches = [];
+    for (const block of html.match(/<dl\b[^>]*>[\s\S]*?<\/dl>/giu) ?? []) {
+      const headword = kdictHeadword(block);
+      if (!headword) continue;
+      if (wanted && headword !== wanted) continue;
+      const translations = kdictTranslations(block);
+      if (translations.length === 0) continue;
+      matches.push({
+        block,
+        meaning: {
+          pos: kdictPartOfSpeech(block),
+          definition: clipDefinition(translations.join('；')),
+        },
+      });
+      if (matches.length >= 3) break;
+    }
+    if (matches.length === 0) return undefined;
 
-export const DICTIONARIES = [youdao, microsoft, eudic, englishDictionary];
+    const first = matches[0].block;
+    return {
+      phonetic: normalizePhonetic(kdictPronunciation(first)),
+      audio: kdictAudio(first),
+      meanings: matches.map((match) => match.meaning),
+    };
+  },
+};
+
+/** The headword as written, without the superscript that numbers homographs. */
+function kdictHeadword(block) {
+  const raw = /<span[^>]*class="[^"]*\bword_type1_17\b[^"]*"[^>]*>([\s\S]*?)<\/span>/iu.exec(block)?.[1];
+  if (!raw) return '';
+  return stripTags(raw.replace(/<sup\b[^>]*>[\s\S]*?<\/sup>/giu, ''));
+}
+
+/** The Chinese part of speech when the page has one, the Korean label otherwise. */
+function kdictPartOfSpeech(block) {
+  const chinese = /<span[^>]*class="[^"]*\bmanyLang11\b[^"]*"[^>]*>([\s\S]*?)<\/span>/iu.exec(block)?.[1];
+  const chineseText = chinese ? stripTags(chinese) : '';
+  if (chineseText) return chineseText;
+  const korean = /「([^」]+)」/u.exec(block)?.[1];
+  return korean ? stripTags(korean) : '';
+}
+
+/**
+ * `[사과<a … fnSoundPlay(…)>]`: the pronunciation is written in Hangul, which
+ * is what a Korean dictionary shows instead of IPA. The recording anchor is
+ * inside the brackets on every entry measured.
+ */
+function kdictPronunciation(block) {
+  const withSound = /\[\s*([^[\]<>]+?)\s*<a\b[^>]*fnSoundPlay/u.exec(block)?.[1];
+  const value = withSound ?? /\[([^[\]]+)\]/u.exec(block)?.[1];
+  const text = value ? stripTags(value) : '';
+  // The page already writes the Hangul in brackets, which is how Korean
+  // dictionaries show pronunciation; keep them instead of switching to IPA.
+  return text ? `[${text}]` : '';
+}
+
+function kdictAudio(block) {
+  const url = /fnSoundPlay\('([^']+)'\)/u.exec(block)?.[1];
+  return url ? decodeEntities(url).trim() || undefined : undefined;
+}
+
+/**
+ * One <dl> can hold many senses of the same homograph (`먹다` has nine). The
+ * Chinese translations are joined with the same `；` separator the other
+ * dictionaries use, so `clipDefinition` can keep whole senses.
+ */
+function kdictTranslations(block) {
+  const out = [];
+  for (const match of block.matchAll(/<dd\b([^>]*)>([\s\S]*?)<\/dd>/giu)) {
+    const classes = classTokens(match[1]);
+    if (!classes.includes('manyLang11') || classes.includes('ml20')) continue;
+    // Sense numbers are `1.` in front of the translation.
+    const text = stripTags(match[2]).replace(/^\d+\s*[.．]\s*/u, '');
+    if (!text || text === '(无对应词汇)') continue;
+    out.push(text);
+  }
+  return out;
+}
+
+/** The existing English-English source, kept as a fourth choice. */
+const englishDictionary = { ...dictionaryDev, label: '英英词典', lang: 'en' };
+
+export const DICTIONARIES = [youdao, microsoft, eudic, englishDictionary, krdict];
 
 export const DEFAULT_DICTIONARY = 'youdao';
 
 export const DICTIONARY_IDS = DICTIONARIES.map((source) => source.id);
 
-/** [id, label] pairs in the order the selectors list them. */
-export const DICTIONARY_CHOICES = DICTIONARIES.map(({ id, label }) => [id, label]);
+/** Sources that serve one Source Language, in selector order. */
+export function dictionariesFor(lang) {
+  const base = normalizeLangTag(lang);
+  return DICTIONARIES.filter((source) => source.lang === base);
+}
+
+/**
+ * The source a Lookup should ask. The Default Dictionary only wins when it is
+ * written for this language; otherwise the language's own first source is used
+ * (and a language with no dictionary gets `undefined`, not a wasted request).
+ */
+export function dictionaryFor(lang, preferred = DEFAULT_DICTIONARY) {
+  const candidates = dictionariesFor(lang);
+  return candidates.find((source) => source.id === preferred) ?? candidates[0];
+}
+
+/** [id, label] pairs for the switch row, in the order the selectors list them. */
+export function dictionaryChoicesFor(lang) {
+  return dictionariesFor(lang).map(({ id, label }) => [id, label]);
+}
+
+/**
+ * [id, label] pairs the Default Dictionary may hold. Only English sources are
+ * choices: a language served by a single dictionary needs no setting, and a
+ * Korean source chosen as the global default would answer no English word.
+ */
+export const DICTIONARY_CHOICES = dictionaryChoicesFor('en');
+
+export const DEFAULT_DICTIONARY_IDS = DICTIONARY_CHOICES.map(([id]) => id);
 
 export function dictionaryById(id) {
   return DICTIONARIES.find((source) => source.id === id);

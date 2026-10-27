@@ -2,10 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_DICTIONARY,
+  DEFAULT_DICTIONARY_IDS,
   DICTIONARIES,
   DICTIONARY_CHOICES,
   dictionaryById,
+  dictionaryChoicesFor,
+  dictionaryFor,
   eudic,
+  krdict,
   microsoft,
   youdao,
 } from '../src/core/dictionaries.js';
@@ -65,6 +69,49 @@ const EUDIC = `
   </div>
 </div>`;
 
+/** A trimmed copy of the krdict Chinese search page for `사과`. */
+const KDICT = `
+<div class="search_result">
+  <dl>
+    <dt>
+      <a href="javascript:checkSubmit('66371','Y');"><span class="word_type1_17">
+        사과
+        <sup>1</sup>
+      </span></a>
+      <span>(沙果/砂果)</span>
+      <span class="word_att_type1">「명사」<span class="manyLang11">名词</span></span>
+      <span class="search_sub"><span class="search_sub">[사과<a href="javascript:fnSoundPlay('https://krdicmedia.korean.go.kr/multimedia/multimedia_files/convert/20120601/91370/SND000080073.mp3');" class="sound">듣기</a>]</span></span>
+      <a href="javascript:checkSubmit('66371','Y');" class="allview manyLang11">查看全部</a>
+    </dt>
+    <dd class="manyLang11 ">苹果</dd>
+    <dd class="ml20">모양이 둥글고 붉으며 새콤하고 단맛이 나는 과일.</dd>
+    <dd class="manyLang11 ml20">圆而红、味道酸甜的水果。</dd>
+  </dl>
+  <dl>
+    <dt>
+      <a href="javascript:checkSubmit('15830','Y');"><span class="word_type1_17">
+        사과
+        <sup>2</sup>
+      </span></a>
+      <span>(謝過)</span>
+      <span class="word_att_type1">「명사」<span class="manyLang11">名词</span></span>
+      <span class="search_sub"><span class="search_sub">[사ː과<a href="javascript:fnSoundPlay('https://krdicmedia.korean.go.kr/multimedia/multimedia_files/convert/20160913/10000/07000/294717/SND000304071.mp3');" class="sound">듣기</a>]</span></span>
+    </dt>
+    <dd class="manyLang11 ">道歉</dd>
+    <dd class="ml20">자신의 잘못을 인정하며 용서해 달라고 빔.</dd>
+    <dd class="manyLang11 ml20">承认自己的不是并请求原谅的行为。</dd>
+  </dl>
+  <dl>
+    <dt>
+      <a href="javascript:checkSubmit('62023','Y');"><span class="word_type1_17">
+        사과나무
+      </span></a>
+      <span class="word_att_type1">「명사」<span class="manyLang11">名词</span></span>
+    </dt>
+    <dd class="manyLang11 ">苹果树</dd>
+  </dl>
+</div>`;
+
 test('the dictionary choices lead with the requested sources, defaulting to Youdao', () => {
   assert.deepEqual(
     DICTIONARY_CHOICES.slice(0, 3),
@@ -77,11 +124,27 @@ test('the dictionary choices lead with the requested sources, defaulting to Youd
   assert.equal(DEFAULT_DICTIONARY, 'youdao');
   assert.equal(dictionaryById('eudic'), eudic);
   assert.equal(dictionaryById('nope'), undefined);
-  assert.deepEqual(
-    DICTIONARIES.map((source) => source.id).slice(-1),
-    ['dictionaryapi'],
+  assert.ok(
+    DICTIONARIES.some((source) => source.id === 'dictionaryapi'),
     'the old English-English source remains available',
   );
+});
+
+test('the Default Dictionary only lists sources that serve English', () => {
+  assert.deepEqual(
+    DICTIONARY_CHOICES.map(([id]) => id),
+    ['youdao', 'microsoft', 'eudic', 'dictionaryapi'],
+  );
+  assert.deepEqual(DEFAULT_DICTIONARY_IDS, DICTIONARY_CHOICES.map(([id]) => id));
+  assert.equal(dictionaryFor('en', 'krdict').id, 'youdao', 'a Korean source cannot answer an English word');
+});
+
+test('a word is sent to a source written for its language', () => {
+  assert.equal(dictionaryFor('ko').id, 'krdict');
+  assert.equal(dictionaryFor('ko-KR').id, 'krdict');
+  assert.deepEqual(dictionaryChoicesFor('ko'), [['krdict', '韩国语学习词典']]);
+  assert.equal(dictionaryFor('en', 'eudic').id, 'eudic');
+  assert.equal(dictionaryFor('fr'), undefined, 'no source means no request worth making');
 });
 
 test('Youdao asks only for the two sections the Popup needs', () => {
@@ -162,4 +225,52 @@ test('Eudic handles a phrase, whose page has no ordered list', () => {
 test('Eudic returns nothing when the page has no entry', () => {
   assert.equal(eudic.parse('<html><body>没有找到</body></html>'), undefined);
   assert.equal(eudic.parse(''), undefined);
+});
+
+test('krdict reads the Chinese search page, keeping the exact headword only', () => {
+  const details = krdict.parse(KDICT, { word: '사과' });
+  assert.equal(details.phonetic, '[사과]', 'Korean dictionaries show the Hangul in brackets');
+  assert.equal(
+    details.audio,
+    'https://krdicmedia.korean.go.kr/multimedia/multimedia_files/convert/20120601/91370/SND000080073.mp3',
+  );
+  assert.deepEqual(details.meanings, [
+    { pos: '名词', definition: '苹果' },
+    { pos: '名词', definition: '道歉' },
+  ], 'both homographs match, but 사과나무 merely contains the word');
+});
+
+test('krdict can be asked for a longer headword, and then keeps only that one', () => {
+  const details = krdict.parse(KDICT, { word: '사과나무' });
+  assert.deepEqual(details.meanings, [{ pos: '名词', definition: '苹果树' }]);
+  assert.equal(details.phonetic, undefined, 'the entry has no pronunciation line in this page');
+});
+
+test('krdict says nothing when the search page has no result', () => {
+  assert.equal(krdict.parse('<html><body>检索结果 共0个</body></html>', { word: '먹었어요' }), undefined);
+  assert.equal(krdict.parse(undefined, { word: '사과' }), undefined);
+});
+
+test('krdict joins every sense of one homograph without losing whole senses', () => {
+  const long = `
+  <dl><dt><span class="word_type1_17">먹다</span>
+    <span class="word_att_type1">「동사」<span class="manyLang11">动词</span></span></dt>
+    <dd class="manyLang11 "><strong>1</strong>. 吃</dd>
+    <dd class="ml20">음식을 먹다.</dd>
+    <dd class="manyLang11 mt15"><strong>2</strong>. 喝</dd>
+    <dd class="manyLang11 mt15"><strong>3</strong>. 抽，吸</dd>
+  </dl>`;
+  assert.deepEqual(krdict.parse(long, { word: '먹다' }).meanings, [
+    { pos: '动词', definition: '吃；喝；抽，吸' },
+  ]);
+});
+
+test('krdict skips a sense whose only Chinese cell is a placeholder', () => {
+  const empty = `
+  <dl><dt><span class="word_type1_17">먹다</span>
+    <span class="word_att_type1">「보조 동사」<span class="manyLang11">补助动词</span></span></dt>
+    <dd class="manyLang11 ">(无对应词汇)</dd>
+    <dd class="manyLang11 ml20">强调前面语句所表达的行为。</dd>
+  </dl>`;
+  assert.equal(krdict.parse(empty, { word: '먹다' }), undefined);
 });

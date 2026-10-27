@@ -374,7 +374,10 @@ test('the default dictionary is a setting, and the Popup may override it per loo
     [...select.options].map((option) => option.textContent).slice(0, 3),
     ['有道词典', '微软词典', '欧陆词典'],
   );
-  assert.match(select.closest('.row').textContent, /释义浮窗里可临时切换/,
+  assert.equal(select.options.length, 4, 'Korean has a source of its own and no choice to make');
+  assert.match(select.closest('.row').textContent, /英文释义词典/,
+    'the setting says which words it governs');
+  assert.match(select.closest('.row').textContent, /浮窗里可临时换/,
     'the setting must not read as locking every lookup');
 
   select.value = 'microsoft';

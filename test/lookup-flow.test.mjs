@@ -157,6 +157,63 @@ test('lookup attaches dictionary details when available', async () => {
   await flow.lookup({ term: 'run' });
   assert.equal(popup.calls.at(-1).phonetic, '/rʌn/');
   assert.equal(popup.calls.at(-1).meanings[0].pos, 'verb');
+  assert.deepEqual(
+    popup.calls.at(-1).dictionaryChoices.map(([id]) => id),
+    ['youdao', 'microsoft', 'eudic', 'dictionaryapi'],
+    'an English word can be read in any of the four English sources',
+  );
+});
+
+test('a Korean word goes to the Korean dictionary, not the English default', async () => {
+  const popup = recorder();
+  const calls = [];
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '苹果', detectedSource: 'ko' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async (word, id) => {
+      calls.push([word, id]);
+      return { phonetic: '[사과]', meanings: [{ pos: '名词', definition: '苹果' }] };
+    },
+    settings: () => ({ dictionary: 'eudic' }),
+  });
+
+  await flow.lookup({ term: '사과' });
+
+  assert.deepEqual(calls, [['사과', 'krdict']], 'the default is an English source');
+  const state = popup.calls.at(-1);
+  assert.equal(state.dictionaryId, 'krdict');
+  assert.equal(state.meanings[0].definition, '苹果');
+  assert.deepEqual(
+    state.dictionaryChoices,
+    [['krdict', '韩国语学习词典']],
+    'one source means nothing to switch to; the Popup hides the row',
+  );
+});
+
+test('a language with no dictionary is not sent to one', async () => {
+  const popup = recorder();
+  let dictionaryCalls = 0;
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: 'hello', detectedSource: 'fr' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => {
+      dictionaryCalls += 1;
+      return undefined;
+    },
+    settings: () => ({ dictionary: 'youdao' }),
+  });
+
+  await flow.lookup({ term: 'bonjour' });
+
+  assert.equal(dictionaryCalls, 0, 'an English source cannot read a French word');
+  const state = popup.calls.at(-1);
+  assert.equal(state.dictionaryId, undefined);
+  assert.equal(state.dictionaryChoices, undefined);
+  assert.equal(state.status, 'ok', 'the translation still arrives');
 });
 
 test('a failing dictionary call does not fail the lookup', async () => {

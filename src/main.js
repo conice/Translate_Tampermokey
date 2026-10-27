@@ -144,7 +144,7 @@ function createDictionaryLookup({ fetchText, cache, sources = DICTIONARIES }) {
   return async function lookup(word, dictionaryId = DEFAULT_DICTIONARY) {
     const source = sourceFor(dictionaryId);
     if (!source) return undefined;
-    const key = `dict|${source.id}|en|en|${word}`;
+    const key = `dict|${source.id}|${source.lang ?? 'en'}|${word}`;
     const cached = cache.get(key);
     // `cache.get` already returns the stored record value, not a wrapper.
     if (cached) return cached;
@@ -153,10 +153,14 @@ function createDictionaryLookup({ fetchText, cache, sources = DICTIONARIES }) {
 
     const pending = (async () => {
       const [detailsBody, lemmaBody] = await Promise.allSettled([
-        fetchText(source.request({ word })).then((body) => source.parse(body)),
-        fetchText(freedictionary.request({ word })).then((body) =>
-          freedictionary.parseLemma(body),
-        ),
+        fetchText(source.request({ word })).then((body) => source.parse(body, { word })),
+        // The base-form lookup is an English dictionary service; asking it
+        // about a Korean word would only spend a request on an empty answer.
+        source.lang === 'en'
+          ? fetchText(freedictionary.request({ word })).then((body) =>
+              freedictionary.parseLemma(body),
+            )
+          : Promise.resolve(undefined),
       ]);
 
       // A source that cannot be reached is worth reporting to the Popup; one

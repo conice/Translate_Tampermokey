@@ -43,6 +43,8 @@ const META = `// ==UserScript==
 // @connect      dict.youdao.com
 // @connect      cn.bing.com
 // @connect      dict.eudic.net
+// @connect      krdict.korean.go.kr
+// @connect      krdicmedia.korean.go.kr
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==

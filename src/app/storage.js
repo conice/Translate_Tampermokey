@@ -1,6 +1,6 @@
 import { createCache } from '../core/cache.js';
 import { decodeCsv, encodeCsv } from '../core/csv.js';
-import { DEFAULT_DICTIONARY, DICTIONARY_IDS } from '../core/dictionaries.js';
+import { DEFAULT_DICTIONARY, DEFAULT_DICTIONARY_IDS } from '../core/dictionaries.js';
 import { createStore, entriesToCsv, readEntriesCsv } from '../core/store.js';
 import { normalizeTheme } from '../core/theme.js';
 
@@ -222,7 +222,7 @@ export function createSettings(gm) {
   }
   if (!Array.isArray(values.disabledProviders)) values.disabledProviders = [];
   if (typeof values.autoSpeak !== 'boolean') values.autoSpeak = false;
-  if (!DICTIONARY_IDS.includes(values.dictionary)) values.dictionary = DEFAULT_DICTIONARY;
+  if (!DEFAULT_DICTIONARY_IDS.includes(values.dictionary)) values.dictionary = DEFAULT_DICTIONARY;
 
   function persist() {
     storage.write(values);
@@ -274,7 +274,7 @@ export function createSettings(gm) {
       return values.dictionary;
     },
     setDictionary(id) {
-      if (!DICTIONARY_IDS.includes(id)) return;
+      if (!DEFAULT_DICTIONARY_IDS.includes(id)) return;
       values.dictionary = id;
       persist();
     },

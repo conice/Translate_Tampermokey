@@ -471,12 +471,14 @@ export function createPanel({
 
     /*
      * The Default Dictionary is a setting because it is the source every new
-     * Popup starts with. The Popup's own select is the temporary override.
+     * Popup starts with. It only covers English: Korean has one source, so
+     * there is nothing to choose there. The Popup's own select is the
+     * temporary override.
      */
     const dictionaryRow = document.createElement('div');
     dictionaryRow.className = 'row';
     const dictionaryLabel = document.createElement('span');
-    dictionaryLabel.textContent = '释义词典:';
+    dictionaryLabel.textContent = '英文释义词典:';
     const dictionarySelect = document.createElement('select');
     dictionarySelect.className = 'dictionary';
     for (const [value, label] of DICTIONARY_CHOICES) {
@@ -492,7 +494,7 @@ export function createPanel({
     dictionarySelect.onchange = () => settings.setDictionary?.(dictionarySelect.value);
     const dictionaryHint = document.createElement('span');
     dictionaryHint.className = 'status';
-    dictionaryHint.textContent = '释义浮窗里可临时切换';
+    dictionaryHint.textContent = '浮窗里可临时换;韩语词另有词典';
     dictionaryRow.append(dictionaryLabel, dictionarySelect, dictionaryHint);
 
     const glossRow = document.createElement('div');

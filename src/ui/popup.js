@@ -32,6 +32,7 @@ const DICTIONARY_MARKS = {
   microsoft: { squares: ['#f25022', '#7fba00', '#00a4ef', '#ffb900'] },
   eudic: { text: 'E' },
   dictionaryapi: { text: 'EN' },
+  krdict: { text: '한' },
 };
 
 /** Inline icons, drawn as strokes so they take the surface's colour. */
@@ -125,6 +126,7 @@ const STYLE = `
 .logo-mark[data-logo="youdao"] { background: #d9271e; color: #fff; }
 .logo-mark[data-logo="eudic"] { background: #1f6ff2; color: #fff; }
 .logo-mark[data-logo="dictionaryapi"] { background: #5b6472; color: #fff; font-size: 8px; }
+.logo-mark[data-logo="krdict"] { background: #0b6bb6; color: #fff; }
 .logo-mark.logo-ms svg { width: 15px; height: 15px; }
 .target {
   display: flex; align-items: center; gap: 5px; margin-left: auto;
@@ -350,18 +352,24 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
    * The Dictionary Source for this Popup, as a row of logos in the top right.
    * It is deliberately not a setting: switching here is a reading decision for
    * one word, so the next Lookup starts from the Default Dictionary again.
+   *
+   * Returns `null` when the word's language has only one dictionary: a row of
+   * one logo would be a control that cannot do anything.
    */
   function dictionaryRow(state) {
+    const choices = state.dictionaryChoices ?? DICTIONARY_CHOICES;
+    if (choices.length < 2) return null;
+
     const row = el('div', 'dict');
     row.setAttribute('role', 'group');
     row.setAttribute('aria-label', '释义词典 · 仅本次');
     row.title = '释义词典(仅本次,不改变默认词典)';
 
     let selected = state.dictionaryId;
-    if (!DICTIONARY_CHOICES.some(([value]) => value === selected)) {
-      selected = DEFAULT_DICTIONARY;
+    if (!choices.some(([value]) => value === selected)) {
+      selected = choices[0][0] ?? DEFAULT_DICTIONARY;
     }
-    for (const [value, label] of DICTIONARY_CHOICES) {
+    for (const [value, label] of choices) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'logo';
@@ -409,7 +417,8 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
       head.append(el('span', 'term', state.term));
       if (state.phonetic) head.append(el('span', 'phonetic', state.phonetic));
       if (state.canSpeak) head.append(speakButton(state));
-      if (state.dictionaryId) head.append(dictionaryRow(state));
+      const dictRow = state.dictionaryId ? dictionaryRow(state) : null;
+      if (dictRow) head.append(dictRow);
       wrap.append(head);
       wrap.append(el('div', 'translation', state.translation));
       if (state.detectedSource) {

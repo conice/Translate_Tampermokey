@@ -100,6 +100,18 @@ test('auto-speak is off until the user asks for it, and only a boolean counts', 
   assert.equal(createSettings(junk).autoSpeak, false, 'a hand-edited cell must not read as true');
 });
 
+test('the Default Dictionary is a word-only setting: a language-specific source is refused', () => {
+  const gm = fakeGm();
+  const settings = createSettings(gm);
+  settings.setDictionary('krdict');
+  assert.equal(settings.dictionary, 'youdao', 'krdict cannot answer an English word');
+
+  const stored = fakeGm({
+    [SETTINGS_KEY]: ['section,key,value', 'general,dictionary,krdict'].join('\r\n'),
+  });
+  assert.equal(createSettings(stored).dictionary, 'youdao');
+});
+
 test('a disabled provider list survives the round trip', () => {
   const gm = fakeGm({
     [SETTINGS_KEY]: ['section,key,value', 'general,version,1', 'disabledProviders,,lingva'].join('\r\n'),

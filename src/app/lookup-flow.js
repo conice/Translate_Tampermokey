@@ -6,8 +6,8 @@
  * injected, so the flow can be exercised without a browser.
  */
 import { normalizeTerm, normalizeSentence, scriptOf, canBecomeEntry } from '../core/normalize.js';
-import { normalizeLangTag, resolveTarget } from '../core/lang.js';
-import { DEFAULT_DICTIONARY } from '../core/dictionaries.js';
+import { resolveTarget } from '../core/lang.js';
+import { dictionaryChoicesFor, dictionaryFor } from '../core/dictionaries.js';
 
 /** Longest Selection worth a Lookup, in characters. */
 export const MAX_SELECTION_CHARS = 400;
@@ -92,7 +92,6 @@ export function createLookupFlow({
 
     const current = ++requestId;
     const canSave = !sentence;
-    const dictionaryId = config.dictionary ?? DEFAULT_DICTIONARY;
 
     popup.render({
       status: 'loading',
@@ -116,11 +115,15 @@ export function createLookupFlow({
 
       /*
        * Dictionary details are a bonus for a word. A sentence has no entry in
-       * a dictionary, and asking for a word in another language only spends a
-       * request: every source here is English-only. A failure is shown in the
-       * Popup but never turns the Lookup into an error.
+       * a dictionary, and a word in a language no source covers would only
+       * spend a request: every source declares the language it serves, so the
+       * Default Dictionary is followed only when it is written for this one.
+       * A failure is shown in the Popup but never turns the Lookup into an
+       * error.
        */
-      const usesDictionary = Boolean(dictionary) && !sentence && normalizeLangTag(entrySource) === 'en';
+      const dictionarySource = dictionaryFor(entrySource, config.dictionary);
+      const dictionaryId = dictionarySource?.id;
+      const usesDictionary = Boolean(dictionary) && !sentence && Boolean(dictionaryId);
       let details;
       let dictionaryStatus;
       if (usesDictionary) {
@@ -197,6 +200,9 @@ export function createLookupFlow({
         audio: details?.audio,
         meanings: details?.meanings,
         dictionaryId: usesDictionary ? dictionaryId : undefined,
+        // One source for a language means nothing to switch to; the Popup
+        // hides the row and the meanings still show.
+        dictionaryChoices: usesDictionary ? dictionaryChoicesFor(entrySource) : undefined,
         dictionaryStatus,
         canSpeak: Boolean(speak),
         canSave,
