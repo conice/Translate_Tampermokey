@@ -6,6 +6,20 @@
  * our CSS cannot leak out. All styles are inline in one stylesheet string.
  */
 import { placeNear } from '../core/gesture.js';
+import { languageLabel, normalizeLangTag } from '../core/lang.js';
+
+/**
+ * Target Languages the Popup offers, as distinct tags. The list is
+ * deliberately short: these are the languages the free providers handle
+ * reliably, and a select is easier to hit than the old free-text setting. The
+ * names come from the shared table, so they match the Book's group headings.
+ * An override left over from the text-field era is added as its own option
+ * rather than dropped.
+ */
+const TARGET_CHOICES = [
+  ['', '自动'],
+  ...['zh-CN', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru'].map((tag) => [tag, languageLabel(tag)]),
+];
 
 const STYLE = `
 :host { all: initial; }
@@ -54,6 +68,14 @@ const STYLE = `
    of what the reader selected. */
 .wrap.sentence .translation { white-space: pre-wrap; }
 .detected { margin-top: 2px; color: var(--tm-muted, #8a8a8a); font-size: 11px; }
+.target {
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+  color: var(--tm-muted, #6b6b6b); font-size: 12px;
+}
+.target select {
+  padding: 2px 5px; border: 1px solid var(--tm-border, #d8d8d8); border-radius: 6px;
+  font: inherit; background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
+}
 .meanings { margin: 7px 0 0; padding: 0; list-style: none; }
 .meanings li { color: var(--tm-fg, #4b4b4b); opacity: .78; font-size: 12px; margin-top: 3px; }
 .pos { color: var(--tm-pos, #9a6b00); font-style: italic; margin-right: 4px; }
@@ -85,6 +107,8 @@ button.ghost {
 .wrap.touch button.primary { padding: 11px 16px; font-size: 15px; }
 .wrap.touch button.ghost { padding: 10px; font-size: 14px; }
 .wrap.touch .speak { padding: 7px 10px; font-size: 14px; }
+.wrap.touch .target { font-size: 14px; }
+.wrap.touch .target select { padding: 10px 12px; font-size: 16px; }
 /* Only the head row shares space with the close button; everything below it
    starts under the button's 36px box. */
 .wrap.touch .head,
@@ -97,7 +121,7 @@ button.ghost {
 }
 `;
 
-export function createPopup({ document, window, onAdd, onSpeak, onCopy, onClose, touch = false }) {
+export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTargetChange, onClose, touch = false }) {
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -137,6 +161,47 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onClose,
 
   let current = null;
 
+  /**
+   * The per-site Target Language, as a select. It sits in the Popup rather than
+   * the Panel because it is a reading decision made in the moment: change it
+   * and the same word is looked up again without leaving the page.
+   */
+  function targetRow(state) {
+    const saved = String(state.targetOverride ?? '').trim().replace(/_/gu, '-');
+    const savedBase = normalizeLangTag(saved);
+    const row = el('div', 'target');
+    row.append(el('span', 'target-label', '本站目标语言:'));
+    const select = document.createElement('select');
+    select.className = 'target-select';
+    select.setAttribute('aria-label', '本站目标语言');
+
+    const choices = [...TARGET_CHOICES];
+    // Match by base language so a saved `zh` still selects 「中文」, whose
+    // option carries the `zh-CN` tag the default Target Language uses.
+    let selected = '';
+    if (savedBase) {
+      const match = choices.find(([value]) => value && normalizeLangTag(value) === savedBase);
+      if (match) {
+        selected = match[0];
+      } else {
+        // A language the short list does not name must still be visible, or
+        // choosing another one would silently discard what was saved.
+        choices.push([saved, saved]);
+        selected = saved;
+      }
+    }
+    for (const [value, label] of choices) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    }
+    select.value = selected;
+    select.onchange = () => onTargetChange?.(select.value, state);
+    row.append(select);
+    return row;
+  }
+
   function render(state) {
     current = state;
     wrap.classList.remove('show');
@@ -160,6 +225,7 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onClose,
       wrap.append(actions);
     } else if (state.sentence) {
       wrap.append(el('div', 'translation', state.translation));
+      wrap.append(targetRow(state));
       const actions = el('div', 'actions');
       addCopy(actions, state);
       if (state.canSpeak) {
@@ -184,6 +250,7 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onClose,
       if (state.detectedSource) {
         wrap.append(el('div', 'detected', `检测语言:${state.detectedSource}`));
       }
+      wrap.append(targetRow(state));
       if (state.meanings?.length) {
         const list = el('ul', 'meanings');
         for (const meaning of state.meanings) {

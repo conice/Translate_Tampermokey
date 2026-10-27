@@ -255,6 +255,29 @@ test('double-clicking a word shows the popup with its translation', async () => 
   assert.match(text, /跑/);
 });
 
+test('changing the target language in the popup looks the word up again and remembers the site', async () => {
+  const { window, document, requests, store } = boot({
+    html: '<p id="t">I run every day.</p>',
+    responses: { clients5: [200, [['跑', 'en']]] },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+  assert.ok(await until(() => /跑/.test(popupText(document))));
+
+  const root = document.querySelector('[data-tm=popup-host]').shadowRoot;
+  const select = root.querySelector('select.target-select');
+  assert.ok(select, 'the Popup carries the site target language');
+  select.value = 'ja';
+  select.dispatchEvent(new window.Event('change'));
+
+  assert.ok(
+    await until(() => requests.some((url) => url.includes('tl=ja'))),
+    'the same word should be sent to the new target language',
+  );
+  assert.ok(await until(() => /跑/.test(popupText(document))));
+  assert.match(store.settings, /^targetOverrides,example\.com,ja$/m, 'the choice is per-site and survives a reload');
+  assert.equal(root.querySelector('select.target-select').value, 'ja', 'the new result shows the chosen target');
+});
+
 test('saving from the popup writes an entry and glides into the gloss layer', async () => {
   const { window, document, store } = boot({
     url: 'https://example.com/article',
@@ -582,6 +605,7 @@ test('the panel opens from the menu and lists saved entries', async () => {
   const text = host.shadowRoot.querySelector('.dialog').textContent;
   assert.match(text, /run/);
   assert.match(text, /跑/);
+  assert.match(text, /英语/, 'the book groups its entries by the language they are written in');
 });
 
 test('a book and settings saved by the JSON era are still read', async () => {

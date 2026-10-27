@@ -17,6 +17,7 @@ function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
 
   const copied = [];
   const spoken = [];
+  const targetChanges = [];
   const popup = createPopup({
     document: window.document,
     window,
@@ -28,11 +29,12 @@ function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
       if (copyThrows) throw new Error('denied');
       return copyResult;
     },
+    onTargetChange: (target, state) => targetChanges.push({ target, state }),
     onClose: () => {},
   });
 
   const wrap = popup.host.shadowRoot.querySelector('.wrap');
-  return { window, document: window.document, popup, wrap, copied, spoken };
+  return { window, document: window.document, popup, wrap, copied, spoken, targetChanges };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -130,4 +132,50 @@ test('loading a sentence shows only that it is working', () => {
   popup.render({ status: 'loading', sentence: true, term: 'We are all here.', anchor: null });
   assert.match(wrap.textContent, /翻译中/);
   assert.equal(wrap.querySelector('.term'), null);
+});
+
+test('the target language is a dropdown in the word popup, not the Panel', () => {
+  const { window, popup, wrap, targetChanges } = setup();
+  const state = word({ target: 'zh-CN', targetOverride: '' });
+  popup.render(state);
+
+  const select = wrap.querySelector('select.target-select');
+  assert.ok(select, 'the site target language belongs where the reading decision is made');
+  assert.equal(select.value, '', 'with no override the dropdown follows the page language');
+  assert.deepEqual(
+    [...select.options].slice(0, 3).map((option) => option.textContent),
+    ['自动', '中文', '英语'],
+  );
+
+  select.value = 'ja';
+  select.dispatchEvent(new window.Event('change'));
+  assert.deepEqual(targetChanges, [{ target: 'ja', state }]);
+});
+
+test('an existing override is selected, including a code outside the short list', () => {
+  const { popup, wrap } = setup();
+  popup.render(word({ target: 'pt-BR', targetOverride: 'pt-BR' }));
+
+  const select = wrap.querySelector('select.target-select');
+  assert.equal(select.value, 'pt-BR');
+  assert.equal(
+    [...select.options].find((option) => option.value === 'pt-BR').textContent,
+    'pt-BR',
+    'a language the list does not name must still be visible',
+  );
+});
+
+test('a saved base code selects the regional option that keeps entries comparable', () => {
+  const { popup, wrap } = setup();
+  popup.render(word({ target: 'zh-CN', targetOverride: 'zh' }));
+
+  const select = wrap.querySelector('select.target-select');
+  assert.equal(select.value, 'zh-CN', '「中文」 is stored as the default Chinese tag, not a bare zh');
+});
+
+test('a sentence result can change the target language too', () => {
+  const { popup, wrap } = setup();
+  popup.render(sentence({ target: 'ja', targetOverride: 'ja' }));
+
+  assert.equal(wrap.querySelector('select.target-select').value, 'ja');
 });

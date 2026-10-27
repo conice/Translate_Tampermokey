@@ -47,3 +47,8 @@ test('resolveTarget: an override wins over page inference', () => {
 test('resolveTarget: an override equal to the source is discarded', () => {
   assert.equal(resolveTarget({ pageLang: 'en', sourceLang: 'en', override: 'en' }), 'zh-CN');
 });
+
+test('resolveTarget: an explicit override keeps the region it was saved with', () => {
+  assert.equal(resolveTarget({ pageLang: 'en', sourceLang: 'en', override: 'zh-CN' }), 'zh-CN');
+  assert.equal(resolveTarget({ pageLang: 'ja', sourceLang: 'auto', override: 'zh_cn' }), 'zh-CN');
+});

@@ -69,16 +69,18 @@ function button(root, label) {
   return [...root.querySelectorAll('button')].find((candidate) => candidate.textContent === label);
 }
 
-function entry(index) {
+function entry(index, overrides = {}) {
   const term = `word${String(index).padStart(3, '0')}`;
+  const sourceLang = overrides.sourceLang ?? 'en';
   return {
-    entryId: `en|${term}`,
+    entryId: `${sourceLang}|${term}`,
     term,
     normalized: term,
-    sourceLang: 'en',
+    sourceLang,
     targetLang: 'zh-CN',
     translation: `词${index}`,
     addedAt: index,
+    ...overrides,
   };
 }
 
@@ -145,7 +147,7 @@ test('the search box is pinned above the list it filters', () => {
   assert.ok(toolbar, 'the search needs a row of its own to pin');
   assert.equal(root.querySelector('.search').parentElement, toolbar);
   assert.equal(toolbar.parentElement, root.querySelector('.body'), 'the toolbar belongs to the scrolling tab body');
-  assert.equal(toolbar.nextElementSibling, root.querySelector('ul.entries'));
+  assert.equal(toolbar.nextElementSibling, root.querySelector('.groups'));
   assert.match(css(panel), /\.toolbar \{[^}]*position:\s*sticky/, 'a long book must not scroll the search away');
 });
 
@@ -173,6 +175,90 @@ test('typing filters the list without rebuilding the input', () => {
   assert.equal(root.querySelectorAll('ul.entries li').length, 3);
 });
 
+test('the book is grouped by the language each word is written in', () => {
+  const { panel } = setup({
+    entries: [
+      entry(1),
+      entry(2, { sourceLang: 'ja', term: '猫', normalized: '猫', translation: '猫' }),
+      entry(3),
+      entry(4, { sourceLang: 'en-US', term: 'colour', normalized: 'colour', translation: '颜色' }),
+    ],
+  });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  assert.deepEqual(
+    [...root.querySelectorAll('.group-title')].map((title) => title.textContent),
+    ['英语3', '日语1'],
+    'one heading per language, region tags folded in, count included',
+  );
+
+  const [english, japanese] = root.querySelectorAll('.group');
+  assert.deepEqual(
+    [...english.querySelectorAll('.term')].map((term) => term.textContent),
+    ['colour', 'word003', 'word001'],
+    'newest first inside a group',
+  );
+  assert.deepEqual(
+    [...japanese.querySelectorAll('.term')].map((term) => term.textContent),
+    ['猫'],
+  );
+  assert.equal(root.querySelectorAll('ul.entries li').length, 4, 'grouping does not hide any entry');
+});
+
+test('group order follows the language, not the newest word', () => {
+  const { panel } = setup({
+    entries: [
+      entry(1, { sourceLang: 'ja', term: '猫', normalized: '猫', translation: '猫' }),
+      entry(2, { sourceLang: 'fr', term: 'chat', normalized: 'chat', translation: '猫' }),
+      entry(3, { sourceLang: 'en', term: 'cat', normalized: 'cat', translation: '猫' }),
+    ],
+  });
+  panel.open();
+
+  assert.deepEqual(
+    [...panel.host.shadowRoot.querySelectorAll('.group-title')].map((title) => title.textContent),
+    ['英语1', '日语1', '法语1'],
+  );
+});
+
+test('a language the table does not name still gets its own group, and a missing one is last', () => {
+  const { panel } = setup({
+    entries: [
+      entry(1, { sourceLang: '' }),
+      entry(2, { sourceLang: 'pt', term: 'gato', normalized: 'gato', translation: '猫' }),
+      entry(3, { sourceLang: 'en', term: 'cat', normalized: 'cat', translation: '猫' }),
+    ],
+  });
+  panel.open();
+
+  assert.deepEqual(
+    [...panel.host.shadowRoot.querySelectorAll('.group-title')].map((title) => title.textContent),
+    ['英语1', 'pt1', '未知语言1'],
+  );
+});
+
+test('filtering leaves only the groups that still have a match', () => {
+  const { panel } = setup({
+    entries: [
+      entry(1, { sourceLang: 'en', term: 'cat', normalized: 'cat', translation: '猫' }),
+      entry(2, { sourceLang: 'ja', term: '犬', normalized: '犬', translation: '狗' }),
+    ],
+  });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  const search = root.querySelector('.search');
+  search.value = '犬';
+  search.dispatchEvent(new (panel.host.ownerDocument.defaultView.Event)('input'));
+
+  assert.deepEqual(
+    [...root.querySelectorAll('.group-title')].map((title) => title.textContent),
+    ['日语1'],
+    'a heading for a language with no visible row would be an empty section',
+  );
+});
+
 test('deleting one entry leaves the rest, and the last one leaves the empty state', () => {
   const { panel, removed } = setup({ entries: [entry(1), entry(2)] });
   panel.open();
@@ -186,6 +272,15 @@ test('deleting one entry leaves the rest, and the last one leaves the empty stat
   root.querySelector('ul.entries li button.danger').click();
   assert.equal(root.querySelectorAll('ul.entries li').length, 0);
   assert.match(root.querySelector('.empty').textContent, /还是空的/);
+});
+
+test('the target language is not a settings field any more', () => {
+  const { panel } = setup();
+  panel.open();
+  const root = openSettings(panel);
+
+  assert.doesNotMatch(root.querySelector('.settings').textContent, /本站目标语言/,
+    'the per-site target is changed from the Popup, where the translation is on screen');
 });
 
 test('the replace-or-merge question is hidden until a file is chosen', async () => {

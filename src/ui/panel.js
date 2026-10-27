@@ -6,6 +6,7 @@
  * reading and should not be one stray click away.
  */
 import { THEMES } from '../core/theme.js';
+import { groupBySourceLang } from '../core/store.js';
 import { CSV_ACCEPT, csvFilename, pickTextFile, saveTextFile } from '../app/file-io.js';
 
 /** How each theme reads in the settings control. UI text, so it lives here. */
@@ -96,6 +97,17 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
   background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
 ul.entries { list-style: none; margin: 0; padding: 0 18px; }
+/*
+ * A language heading, not a list row: the entries are grouped under it, so the
+ * count travels with the name instead of repeating on every row.
+ */
+.group-title {
+  display: flex; align-items: baseline; gap: 6px;
+  margin: 0; padding: 12px 18px 2px;
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  color: var(--tm-muted, #6b6b6b);
+}
+.group-count { font-weight: 400; opacity: .75; }
 ul.entries li {
   display: flex; gap: 10px; align-items: baseline;
   padding: 8px 0; border-bottom: 1px solid var(--tm-border, #f2f2f2);
@@ -133,6 +145,7 @@ select.theme {
   .body::-webkit-scrollbar { width: 10px; }
   .toolbar { padding: 12px 14px 10px; }
   ul.entries { padding: 0 14px; }
+  .group-title { padding: 12px 14px 2px; }
   .empty { padding: 24px 14px; }
   .settings { padding: 12px 14px; }
 }
@@ -266,31 +279,50 @@ export function createPanel({
       return empty;
     }
 
-    const list = document.createElement('ul');
-    list.className = 'entries';
-    for (const entry of entries) {
-      const li = document.createElement('li');
-      const term = document.createElement('span');
-      term.className = 'term';
-      term.textContent = entry.term;
-      const meta = document.createElement('span');
-      meta.className = 'meta';
-      meta.textContent = [entry.phonetic, `${entry.sourceLang}→${entry.targetLang}`].filter(Boolean).join(' · ');
-      const translation = document.createElement('span');
-      translation.className = 'translation';
-      translation.textContent = entry.translation;
-      const remove = document.createElement('button');
-      remove.className = 'danger';
-      remove.textContent = '删除';
-      remove.onclick = () => {
-        book.remove(entry.entryId);
-        onGlossChange?.();
-        rerenderBody();
-      };
-      li.append(term, meta, translation, remove);
-      list.append(li);
+    /*
+     * Newest first inside a group, but groups themselves keep a language order:
+     * sorting by recency alone would move a whole language up the book because
+     * of one word added today.
+     */
+    const container = document.createElement('div');
+    container.className = 'groups';
+    for (const group of groupBySourceLang(entries)) {
+      const section = document.createElement('section');
+      section.className = 'group';
+      const title = document.createElement('h2');
+      title.className = 'group-title';
+      const count = document.createElement('span');
+      count.className = 'group-count';
+      count.textContent = String(group.entries.length);
+      title.append(document.createTextNode(group.label), count);
+      const list = document.createElement('ul');
+      list.className = 'entries';
+      for (const entry of group.entries) {
+        const li = document.createElement('li');
+        const term = document.createElement('span');
+        term.className = 'term';
+        term.textContent = entry.term;
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = [entry.phonetic, `${entry.sourceLang}→${entry.targetLang}`].filter(Boolean).join(' · ');
+        const translation = document.createElement('span');
+        translation.className = 'translation';
+        translation.textContent = entry.translation;
+        const remove = document.createElement('button');
+        remove.className = 'danger';
+        remove.textContent = '删除';
+        remove.onclick = () => {
+          book.remove(entry.entryId);
+          onGlossChange?.();
+          rerenderBody();
+        };
+        li.append(term, meta, translation, remove);
+        list.append(li);
+      }
+      section.append(title, list);
+      container.append(section);
     }
-    return list;
+    return container;
   }
 
   function rerenderBody() {
@@ -349,27 +381,6 @@ export function createPanel({
     };
     glossLabel.append(glossBox, document.createTextNode(`在当前站点 (${host}) 显示注音`));
     glossRow.append(glossLabel);
-
-    const targetRow = document.createElement('div');
-    targetRow.className = 'row';
-    const targetLabel = document.createElement('span');
-    targetLabel.textContent = '本站目标语言:';
-    const targetInput = document.createElement('input');
-    targetInput.placeholder = '自动(如 zh-CN / en / ja)';
-    targetInput.value = settings.targetOverride(host) ?? '';
-    targetInput.style.cssText =
-      'padding:6px 8px;border:1px solid var(--tm-border,#ddd);border-radius:7px;font:inherit;width:180px;' +
-      'background:var(--tm-bg,#fff);color:var(--tm-fg,#1a1a1a);';
-    const targetSave = document.createElement('button');
-    targetSave.className = 'small';
-    targetSave.textContent = '保存';
-    const targetStatus = document.createElement('span');
-    targetStatus.className = 'status';
-    targetSave.onclick = () => {
-      settings.setTargetOverride(host, targetInput.value.trim());
-      targetStatus.textContent = '已保存,刷新页面后生效';
-    };
-    targetRow.append(targetLabel, targetInput, targetSave, targetStatus);
 
     const ioRow = document.createElement('div');
     ioRow.className = 'row';
@@ -485,7 +496,6 @@ export function createPanel({
       lookupRow,
       themeRow,
       glossRow,
-      targetRow,
       document.createElement('hr'),
       ioRow,
       importPrompt,

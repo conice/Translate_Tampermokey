@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createStore, makeEntry } from '../src/core/store.js';
+import { createStore, groupBySourceLang, makeEntry } from '../src/core/store.js';
 
 function memoryStorage(initial = undefined) {
   let data = initial;
@@ -297,4 +297,27 @@ test('an import whose write is refused says so instead of reporting success', ()
     () => store.importCsv('term,normalized,sourceLang,targetLang,translation\r\nrun,run,en,zh-CN,跑'),
     /没能写入存储/,
   );
+});
+
+test('book entries group by source language in a stable order', () => {
+  const entries = [
+    makeEntry({ ...base, term: 'dog', normalized: 'dog', sourceLang: 'en-US' }),
+    makeEntry({ ...base, term: '犬', normalized: '犬', sourceLang: 'ja' }),
+    makeEntry({ ...base, term: 'cat', normalized: 'cat' }),
+    makeEntry({ ...base, term: 'gato', normalized: 'gato', sourceLang: 'pt' }),
+    makeEntry({ ...base, term: 'x', normalized: 'x', sourceLang: '' }),
+  ];
+
+  const groups = groupBySourceLang(entries);
+  assert.deepEqual(
+    groups.map((group) => [group.lang, group.label, group.entries.length]),
+    [
+      ['en', '英语', 2],
+      ['ja', '日语', 1],
+      ['pt', 'pt', 1],
+      ['', '未知语言', 1],
+    ],
+    'region tags fold into their base language, unnamed codes keep their code',
+  );
+  assert.deepEqual(groups[0].entries.map((entry) => entry.term), ['dog', 'cat'], 'input order is kept');
 });

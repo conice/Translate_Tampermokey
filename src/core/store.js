@@ -1,5 +1,6 @@
 import { decodeCsv, encodeCsv, unguardCell } from './csv.js';
 import { normalizeTerm } from './normalize.js';
+import { LANGUAGE_ORDER, languageLabel, normalizeLangTag } from './lang.js';
 
 export const STORAGE_KEY = 'entries';
 
@@ -147,6 +148,38 @@ export function makeEntry({
     partOfSpeech,
     addedAt: now(),
   };
+}
+
+/**
+ * Group Entries by the language they are written in — the language the reader
+ * is learning, not the one they read the page in. A word saved from an English
+ * page and the same word saved from a Japanese page belong to different
+ * groups, because the entry identity is per source language.
+ *
+ * Groups follow a fixed order (LANGUAGE_ORDER, then unknown codes
+ * alphabetically, then entries with no language at all) rather than one sorted
+ * by size: adding a word must not reshuffle the book under the reader's
+ * finger. Entries keep the order they were handed in, which the Panel makes
+ * newest-first.
+ */
+export function groupBySourceLang(entries) {
+  const groups = new Map();
+  for (const entry of entries ?? []) {
+    const lang = normalizeLangTag(entry?.sourceLang);
+    const existing = groups.get(lang);
+    if (existing) existing.entries.push(entry);
+    else groups.set(lang, { lang, label: languageLabel(lang), entries: [entry] });
+  }
+  return [...groups.values()].sort((a, b) => {
+    const rankA = LANGUAGE_ORDER.indexOf(a.lang);
+    const rankB = LANGUAGE_ORDER.indexOf(b.lang);
+    if (rankA !== -1 && rankB !== -1) return rankA - rankB;
+    if (rankA !== -1) return -1;
+    if (rankB !== -1) return 1;
+    if (!a.lang) return 1;
+    if (!b.lang) return -1;
+    return a.lang.localeCompare(b.lang);
+  });
 }
 
 /**

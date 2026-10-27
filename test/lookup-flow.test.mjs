@@ -191,6 +191,24 @@ test('lookup honours a per-site target override', async () => {
   });
   await flow.lookup({ term: 'run' });
   assert.equal(seen[0].target, 'ja');
+  assert.equal(popup.calls.at(-1).target, 'ja', 'the Popup shows what is being translated into');
+  assert.equal(popup.calls.at(-1).targetOverride, 'ja', 'the Popup needs the override to select it');
+});
+
+test('a lookup without an override tells the Popup to follow the page', async () => {
+  const popup = recorder();
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    settings: () => ({ targetOverride: () => undefined }),
+    host: 'example.com',
+  });
+
+  await flow.lookup({ term: 'run' });
+  assert.equal(popup.calls.at(-1).target, 'zh-CN');
+  assert.equal(popup.calls.at(-1).targetOverride, '');
 });
 
 test('a sentence is translated as written, without dictionary work', async () => {

@@ -82,10 +82,11 @@ export function createLookupFlow({
 
     const config = settings();
     const source = sourceLang ?? sourceLangOf(normalized);
+    const targetOverride = config.targetOverride?.(host) ?? '';
     const target = resolveTarget({
       pageLang: pageLanguage(),
       sourceLang: source,
-      override: config.targetOverride?.(host),
+      override: targetOverride,
     });
 
     const current = ++requestId;
@@ -136,6 +137,8 @@ export function createLookupFlow({
           canSave: false,
           anchor,
           sourceLang: entrySource,
+          target,
+          targetOverride,
           onRetry: () => lookup({ term: normalized, anchor, sourceLang }),
         });
         return [];
@@ -194,6 +197,8 @@ export function createLookupFlow({
         entry,
         anchor,
         sourceLang: entrySource,
+        target,
+        targetOverride,
         onRetry: () => lookup({ term: normalized, anchor, sourceLang }),
       });
       return [entry];

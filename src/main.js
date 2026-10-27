@@ -176,6 +176,19 @@ const popup = createPopup({
   },
   onSpeak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
   onCopy: copyText,
+  /*
+   * Changing the Target Language is a site-wide setting, but the decision is
+   * made while reading, so it lives in the Popup. The same selection is looked
+   * up again under the new target; an empty value clears the override and
+   * returns to Page Language inference.
+   */
+  onTargetChange: (target, state) => {
+    settings.setTargetOverride(host, target);
+    refreshGlosses({ force: true });
+    if (state?.term) {
+      flow.lookup({ term: state.term, anchor: state.anchor, sourceLang: state.sourceLang });
+    }
+  },
   onClose: () => {},
 });
 
