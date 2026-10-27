@@ -243,3 +243,58 @@ test('store translation map is scoped to the target language', () => {
   store.add(makeEntry(base));
   assert.equal(store.translationMap('en').has('run'), false);
 });
+
+test('a cell a spreadsheet would run as a formula is exported as literal text', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add(makeEntry({ ...base, term: '=1+1', normalized: '1+1', translation: '-2+3' }));
+  const csv = store.exportCsv();
+
+  // The apostrophe goes inside the cell, and is present before any quoting.
+  assert.match(csv, /^'=1\+1,/mu);
+  assert.match(csv, /,'-2\+3,/u);
+
+  const target = createStore({ storage: memoryStorage() });
+  target.importCsv(csv);
+  const [entry] = target.all();
+  assert.equal(entry.term, '=1+1', 'the guard is undone, not kept as part of the word');
+  assert.equal(entry.translation, '-2+3');
+});
+
+test('an addedAt outside the Date range becomes the import time', () => {
+  const store = createStore({ storage: memoryStorage(), now: () => 456 });
+  store.importCsv(
+    'term,normalized,sourceLang,targetLang,translation,addedAt\r\n' +
+      'run,run,en,zh-CN,跑,9999999999999999999999\r\n',
+  );
+  assert.equal(store.get('en|run').addedAt, 456);
+});
+
+test('exporting an entry whose addedAt cannot be a Date does not throw', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add({ ...makeEntry(base), addedAt: 1e20 });
+  const row = store.exportCsv().replace(/^\uFEFF/u, '').split('\r\n')[1];
+  assert.equal(row.split(',').at(-1), '');
+});
+
+test('a hand-edited normalized column cannot mint an identity no lookup can produce', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.importCsv('term,normalized,sourceLang,targetLang,translation\r\nRunning,Running,en,zh-CN,跑');
+  assert.deepEqual(store.all().map((entry) => entry.entryId), ['en|running']);
+  assert.equal(store.get('en|running').term, 'Running', 'the word as written is kept');
+});
+
+test('a translation with edge spaces survives the export round trip', () => {
+  const store = createStore({ storage: memoryStorage() });
+  store.add(makeEntry({ ...base, translation: '  spaced  ' }));
+  const target = createStore({ storage: memoryStorage() });
+  target.importCsv(store.exportCsv());
+  assert.equal(target.get('en|run').translation, '  spaced  ');
+});
+
+test('an import whose write is refused says so instead of reporting success', () => {
+  const store = createStore({ storage: { read: () => undefined, write: () => false } });
+  assert.throws(
+    () => store.importCsv('term,normalized,sourceLang,targetLang,translation\r\nrun,run,en,zh-CN,跑'),
+    /没能写入存储/,
+  );
+});

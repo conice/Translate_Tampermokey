@@ -165,11 +165,61 @@ test('a storage adapter that throws on both calls leaves the script running', ()
   assert.deepEqual(createSettings(broken).all().theme, 'system');
 });
 
-test('the stored entry list is what the panel would export, minus the BOM', () => {
+test('the stored entry list has the same columns as the exported file, minus the BOM', () => {
   const gm = fakeGm();
   const book = createBook(gm);
   book.add(RUN);
-  assert.equal(gm.raw(ENTRIES_KEY), book.exportCsv().replace(/^﻿/u, ''));
+  assert.equal(gm.raw(ENTRIES_KEY), book.exportCsv().replace(/^\uFEFF/u, ''));
+});
+
+test('the stored copy is not formula-guarded, only the exported file is', () => {
+  const gm = fakeGm();
+  createBook(gm).add({
+    ...RUN,
+    entryId: 'en|1+1',
+    term: '=1+1',
+    normalized: '1+1',
+    translation: '-2+3',
+  });
+
+  const raw = gm.raw(ENTRIES_KEY);
+  assert.match(raw, /^=1\+1,/mu, 'storage is read by this script alone and keeps values raw');
+  assert.doesNotMatch(raw, /'/u);
+});
+
+test('a cache row whose expiry is not a number is dropped rather than kept forever', () => {
+  const gm = fakeGm({
+    [CACHE_KEY]: [
+      'key,value,expires,used',
+      'en|zh-CN|run,"{""translation"":""跑""}",oops,oops',
+      'en|zh-CN|ok,"{""translation"":""好""}",9999999999999,123',
+    ].join('\r\n'),
+  });
+
+  assert.equal(createLookupCache(gm).size, 1, 'NaN <= now is false, so such a row would never expire');
+  assert.deepEqual(createLookupCache(gm).get('en|zh-CN|ok'), { translation: '好' });
+});
+
+test('a write the manager refuses is reported as false', () => {
+  const gm = {
+    getValue: () => null,
+    setValue: () => {
+      throw new Error('full');
+    },
+  };
+  const storage = createGmStorage(ENTRIES_KEY, gm, STORAGE_CODECS.entries);
+  assert.equal(storage.write([RUN]), false);
+});
+
+test('a value the codec cannot encode surfaces instead of being reported as saved', () => {
+  const storage = createGmStorage('custom', fakeGm(), {
+    empty: null,
+    decode: (text) => text,
+    encode: () => {
+      throw new Error('bad value');
+    },
+  });
+  assert.throws(() => storage.write('x'), /bad value/u);
 });
 
 test('the codec table exposes the same formats the factories use', () => {
@@ -187,6 +237,6 @@ test('createGmStorage reads through the codec it is given', () => {
     encode: (value) => value,
   });
   assert.equal(storage.read(), 'a,b\r\n1,2');
-  storage.write('wrote');
+  assert.equal(storage.write('wrote'), true);
   assert.equal(gm.raw('custom'), 'wrote');
 });

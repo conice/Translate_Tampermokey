@@ -28,7 +28,7 @@ npm run build        # 生成 dist/translate-tampermokey.user.js
 | 本站目标语言 | 面板「设置」页,留空则按页面语言自动判断 |
 | 导出 / 导入 | 面板「设置」页:导出打开保存对话框存成 CSV;导入先选文件,再选「覆盖现有」或「合并」 |
 
-> 导出的文件是 UTF-8 CSV(带 BOM),列依次为 `term,normalized,sourceLang,targetLang,translation,phonetic,partOfSpeech,addedAt`。列顺序可以调换;`sourceLang`、`targetLang`、`translation` 必填,`term` 与 `normalized` 至少给一个,缺这些值的行会被跳过。`entryId` 不写进文件,导入时按 `sourceLang|normalized` 重新算出,手改 CSV 不会把词条身份改乱。导入时「覆盖现有」会清空当前生词本(文件解析、表头校验通过、且至少有一行可用之后才清空;拿错文件、空文件、内容全坏的文件都不会清空),「合并」保留现有词条并更新同名词条(见 `docs/adr/0008`)。
+> 导出的文件是 UTF-8 CSV(带 BOM),列依次为 `term,normalized,sourceLang,targetLang,translation,phonetic,partOfSpeech,addedAt`。列顺序可以调换;`sourceLang`、`targetLang`、`translation` 必填,`term` 与 `normalized` 至少给一个,缺这些值的行会被跳过。以 `=`、`+`、`-`、`@` 开头的单元格在导出时会加一个 `'` 前缀,免得 Excel 把网页上抄来的文字当公式执行;导入时这个前缀会被去掉,手工编辑时也可以照同样规则写。`entryId` 不写进文件,导入时按 `sourceLang|normalized` 重新算出,手改 CSV 不会把词条身份改乱。导入时「覆盖现有」会清空当前生词本(文件解析、表头校验通过、且至少有一行可用之后才清空;拿错文件、空文件、内容全坏的文件都不会清空),「合并」保留现有词条并更新同名词条(见 `docs/adr/0008`)。
 
 > 手机上不要试「双击」:Chrome for Android 只有关掉双击缩放才会派发 `dblclick`,iOS Safari 从不派发。看到「译」圆钮就说明触屏路径已生效(`docs/adr/0006`)。选区为什么能到 400 字符、为什么允许跨行,见 `docs/adr/0007`。
 
@@ -92,7 +92,7 @@ npm run build        # 版本号取自 package.json
 - 无云同步;换设备靠面板里的 CSV 导入/导出。旧版导出的 JSON 文件不能再导入。
 - 导出优先用 `showSaveFilePicker`(真正的「另存为」对话框),但只有 Chromium 系且页面是安全上下文(`https`)时才有;其余情况(含 Firefox、手机浏览器、用户脚本沙箱里拿不到该 API)自动退回浏览器下载,文件内容一样,只是没有选路径的对话框。
 - 导入依赖原生文件选择框;在极少数内嵌浏览器里,取消选择可能不触发 `cancel` 事件,此时面板不会报错,再点一次「从文件导入」即可。
-- 存储改为 CSV 后**不能回退到 0.3.x**:旧版读到 CSV 会当作空,生词本显示为空(数据仍在,装回新版即恢复)。升级前建议先导出一份 CSV(`docs/adr/0009`)。
+- 存储改为 CSV 后**不能回退到 0.3.x**:旧版读到 CSV 会当作空,生词本显示为空(数据仍在,装回新版即恢复)。升级本身无需准备,0.3.x 的 JSON 值会在新版首次读取时自动迁移;若打算回退,先用 0.4.0 导出一份 CSV —— 0.3.x 只有 JSON 文本导出,那个文件不能当 CSV 导入(`docs/adr/0009`)。
 
 ## 目录
 

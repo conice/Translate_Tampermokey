@@ -6,6 +6,12 @@
  */
 
 const NEEDS_QUOTING = /[",\r\n]|^\s|\s$/u;
+/**
+ * A cell a spreadsheet would evaluate: Excel treats a leading `=`, `+`, `-`,
+ * `@`, tab or CR as the start of a formula, and the book's text comes from
+ * whatever page the user was reading.
+ */
+const FORMULA_LEAD = /^[=+\-@\t\r]/u;
 
 /** One cell: quote only when the text would otherwise break the grid. */
 export function csvCell(value) {
@@ -14,14 +20,34 @@ export function csvCell(value) {
 }
 
 /**
+ * Prefix a cell a spreadsheet would run as a formula with an apostrophe, the
+ * standard way to make it literal text. Only the file written for a human goes
+ * through this; storage is read by this script alone and keeps its values raw.
+ */
+export function formulaSafeCell(value) {
+  const text = value === null || value === undefined ? '' : String(value);
+  return FORMULA_LEAD.test(text) ? `'${text}` : text;
+}
+
+/** Undo `formulaSafeCell`, so a guarded file round-trips to the same values. */
+export function unguardCell(value) {
+  const text = value === null || value === undefined ? '' : String(value);
+  return text.startsWith("'") && FORMULA_LEAD.test(text.slice(1)) ? text.slice(1) : text;
+}
+
+/**
  * `columns` is the header row; `rows` are arrays of cell values in that order.
  * The BOM is for files opened in a spreadsheet — an Excel on a Windows code
  * page reads a BOM-less UTF-8 file as mojibake. Storage never needs it.
+ * `formulaSafe` guards every cell against being run as a formula.
  */
-export function encodeCsv(columns, rows, { bom = false } = {}) {
-  const lines = [columns.map(csvCell).join(',')];
-  for (const row of rows) lines.push(row.map(csvCell).join(','));
-  return `${bom ? '﻿' : ''}${lines.join('\r\n')}`;
+export function encodeCsv(columns, rows, { bom = false, formulaSafe = false } = {}) {
+  // Guard before quoting: a quoted `"=1,2"` is still evaluated by Excel once
+  // the CSV layer is stripped, so the apostrophe has to be inside the quotes.
+  const cell = formulaSafe ? (value) => csvCell(formulaSafeCell(value)) : csvCell;
+  const lines = [columns.map(cell).join(',')];
+  for (const row of rows) lines.push(row.map(cell).join(','));
+  return `${bom ? '\uFEFF' : ''}${lines.join('\r\n')}`;
 }
 
 /**
@@ -31,7 +57,7 @@ export function encodeCsv(columns, rows, { bom = false } = {}) {
  * Blank lines, including the one a trailing newline leaves behind, are dropped.
  */
 export function decodeCsv(source) {
-  const text = String(source ?? '').replace(/^﻿/u, '');
+  const text = String(source ?? '').replace(/^\uFEFF/u, '');
   const rows = [];
   let row = [];
   let cell = '';

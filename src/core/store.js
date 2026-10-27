@@ -1,4 +1,4 @@
-import { decodeCsv, encodeCsv } from './csv.js';
+import { decodeCsv, encodeCsv, unguardCell } from './csv.js';
 import { normalizeTerm } from './normalize.js';
 
 export const STORAGE_KEY = 'entries';
@@ -19,27 +19,39 @@ export const CSV_COLUMNS = [
   'addedAt',
 ];
 
+/** The largest timestamp a JavaScript Date can hold, in milliseconds. */
+export const MAX_TIME_MS = 8.64e15;
+
+/**
+ * A timestamp outside the Date range is not a date. Passing one to
+ * `new Date(...).toISOString()` throws, and a throw while encoding would take
+ * the whole save down with it — including saves that have nothing to do with
+ * the bad row. Values that are not timestamps fall back to the moment of import.
+ */
 function parseAddedAt(raw, fallback) {
   const text = raw.trim();
   if (text === '') return fallback;
-  if (/^\d+$/u.test(text)) return Number(text);
-  const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  const numeric = /^-?\d+$/u.test(text);
+  const value = numeric ? Number(text) : Date.parse(text);
+  return Number.isFinite(value) && Math.abs(value) <= MAX_TIME_MS ? value : fallback;
 }
 
 function exportAddedAt(addedAt) {
-  return typeof addedAt === 'number' && Number.isFinite(addedAt)
+  return typeof addedAt === 'number' && Number.isFinite(addedAt) && Math.abs(addedAt) <= MAX_TIME_MS
     ? new Date(addedAt).toISOString()
     : '';
 }
 
-/** The book as CSV. A file gets the BOM; what the userscript manager keeps does not. */
-export function entriesToCsv(entries, { bom = false } = {}) {
+/**
+ * The book as CSV. A file gets the BOM and the formula guard, because a human
+ * opens it in a spreadsheet; what the userscript manager keeps gets neither.
+ */
+export function entriesToCsv(entries, { bom = false, human = false } = {}) {
   const row = (entry) =>
     CSV_COLUMNS.map((column) =>
       column === 'addedAt' ? exportAddedAt(entry.addedAt) : entry[column],
     );
-  return encodeCsv(CSV_COLUMNS, entries.map(row), { bom });
+  return encodeCsv(CSV_COLUMNS, entries.map(row), { bom, formulaSafe: human });
 }
 
 /**
@@ -64,33 +76,50 @@ export function readEntriesCsv(text, { now = Date.now } = {}) {
   }
   if (missing.length > 0) throw new Error(`CSV 缺少列:${missing.join('、')}`);
 
-  const read = (cells, name) => {
+  /*
+   * Codes and identifiers are trimmed: a hand-edited file picks up stray spaces
+   * from a spreadsheet, and `zh-CN ` is not a language tag. The user's own text
+   * (translation, phonetic) keeps its edges — the exporter quotes them
+   * precisely so they survive, and trimming here would undo that promise.
+   */
+  const code = (cells, name) => {
     const index = column(name);
-    return index === -1 ? '' : (cells[index] ?? '').trim();
+    return index === -1 ? '' : unguardCell(cells[index] ?? '').trim();
+  };
+  const prose = (cells, name) => {
+    const index = column(name);
+    return index === -1 ? '' : unguardCell(cells[index] ?? '');
   };
 
   const entries = [];
   let skipped = 0;
   for (const cells of rows) {
-    const sourceLang = read(cells, 'sourceLang');
-    const targetLang = read(cells, 'targetLang');
-    const translation = read(cells, 'translation');
-    const rawTerm = read(cells, 'term');
-    const normalized = read(cells, 'normalized') || normalizeTerm(rawTerm);
-    if (!sourceLang || !targetLang || !normalized || !translation) {
+    const sourceLang = code(cells, 'sourceLang');
+    const targetLang = code(cells, 'targetLang');
+    const translation = prose(cells, 'translation');
+    const rawTerm = code(cells, 'term');
+    /*
+     * Identity is always normalizeTerm of the surface form, exactly as the
+     * lookup flow computes it. Trusting the `normalized` column would let a
+     * hand-edited file mint an entryId that no lookup can ever produce, so the
+     * row would sit in the book and never match a gloss.
+     */
+    const surface = rawTerm || code(cells, 'normalized');
+    const normalized = normalizeTerm(surface);
+    if (!sourceLang || !targetLang || !normalized || !translation.trim()) {
       skipped += 1;
       continue;
     }
     entries.push({
       entryId: `${sourceLang}|${normalized}`,
-      term: rawTerm || normalized,
+      term: surface,
       normalized,
       sourceLang,
       targetLang,
       translation,
-      phonetic: read(cells, 'phonetic') || undefined,
-      partOfSpeech: read(cells, 'partOfSpeech') || undefined,
-      addedAt: parseAddedAt(read(cells, 'addedAt'), now()),
+      phonetic: prose(cells, 'phonetic') || undefined,
+      partOfSpeech: code(cells, 'partOfSpeech') || undefined,
+      addedAt: parseAddedAt(prose(cells, 'addedAt'), now()),
     });
   }
   return { entries, skipped };
@@ -135,7 +164,9 @@ export function createStore({ storage, now = Date.now }) {
   }
 
   function save() {
-    storage.write(entries);
+    // The adapter reports whether the value reached storage; `undefined` means
+    // an in-memory double, which cannot fail.
+    return storage.write(entries);
   }
 
   function isValidEntry(value) {
@@ -195,8 +226,12 @@ export function createStore({ storage, now = Date.now }) {
     },
 
     exportCsv() {
-      // A BOM keeps Excel from reading the UTF-8 file as the system code page.
-      return entriesToCsv(entries, { bom: true });
+      /*
+       * A BOM keeps Excel from reading the UTF-8 file as the system code page;
+       * the formula guard is only for this file, since the book's text comes
+       * from arbitrary pages and a cell like `=1+1` is otherwise run on open.
+       */
+      return entriesToCsv(entries, { bom: true, human: true });
     },
 
     /**
@@ -232,7 +267,14 @@ export function createStore({ storage, now = Date.now }) {
           updated += 1;
         }
       }
-      save();
+      /*
+       * The counts above describe this session's copy only. If the write was
+       * refused, the next reload shows the old book, so say so rather than
+       * reporting an import that did not survive.
+       */
+      if (save() === false) {
+        throw new Error('词条已读入,但没能写入存储,刷新页面后会丢失');
+      }
       return { added, updated, skipped };
     },
   };

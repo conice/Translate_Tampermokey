@@ -107,7 +107,8 @@ test('a long book is listed in full inside a body that can scroll', () => {
   assert.match(rule(style, '.dialog {'), /max-height:\s*min\(640px,\s*100%\)/,
     'the cap must be a share of the box the dialog is laid out in, not of vh');
   assert.match(body, /scrollbar-width:\s*thin/, 'a phone otherwise shows nothing until you drag');
-  assert.match(style, /\.body::-webkit-scrollbar-thumb \{[^}]*background:/, 'Chrome needs its own scrollbar rule');
+  assert.match(style, /@supports not \(scrollbar-width: thin\) \{[\s\S]*?-webkit-scrollbar-thumb/,
+    'the WebKit rule must be gated: the standard properties switch it off on current engines');
 });
 
 test('the dialog cannot overflow the backdrop that holds it', () => {

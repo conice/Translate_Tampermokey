@@ -146,7 +146,20 @@ const CACHE_CODEC = {
       } catch {
         continue;
       }
-      records[key] = { value: parsed, expires: Number(expires), used: Number(used) };
+      const expiresAt = Number(expires);
+      /*
+       * `NaN` is a number, so it would pass the cache's own type check and then
+       * never satisfy its expiry test — a row that lives in the cache forever.
+       * A missing `used` only disturbs eviction order, so it can borrow the
+       * expiry instead of dropping an otherwise good entry.
+       */
+      if (!Number.isFinite(expiresAt)) continue;
+      const usedAt = Number(used);
+      records[key] = {
+        value: parsed,
+        expires: expiresAt,
+        used: Number.isFinite(usedAt) ? usedAt : expiresAt,
+      };
     }
     return records;
   },
@@ -175,11 +188,20 @@ export function createGmStorage(key, gm, codec) {
         return codec.empty;
       }
     },
+    /**
+     * Resolves to whether the value reached the manager. Encoding runs before
+     * the catch: it is this script's own code, so a value it cannot represent is
+     * a bug, not a storage permission the user can do nothing about, and
+     * reporting success would claim a save that never happened.
+     */
     write(value) {
+      const text = codec.encode(value);
       try {
-        gm.setValue(key, codec.encode(value));
+        gm.setValue(key, text);
+        return true;
       } catch {
         /* storage full or blocked: the in-memory copy still works this session */
+        return false;
       }
     },
   };

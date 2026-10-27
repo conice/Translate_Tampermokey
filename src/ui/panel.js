@@ -69,11 +69,19 @@ h1 { font-size: 16px; margin: 0; font-weight: 600; }
   scrollbar-width: thin;
   scrollbar-color: var(--tm-muted, #8a8a8a) transparent;
 }
-.body::-webkit-scrollbar { width: 8px; }
-.body::-webkit-scrollbar-track { background: transparent; }
-.body::-webkit-scrollbar-thumb {
-  background: var(--tm-muted, #8a8a8a); border-radius: 8px;
-  border: 2px solid var(--tm-bg, #fff); /* thins the thumb without a second colour */
+/*
+ * Chromium 121+ and Safari 18.2+ honour the two standard properties above and
+ * then ignore ::-webkit-scrollbar entirely, so these rules only take effect
+ * where the standard ones are unknown — older WebKit, which otherwise draws
+ * its own overlay scrollbar.
+ */
+@supports not (scrollbar-width: thin) {
+  .body::-webkit-scrollbar { width: 8px; }
+  .body::-webkit-scrollbar-track { background: transparent; }
+  .body::-webkit-scrollbar-thumb {
+    background: var(--tm-muted, #8a8a8a); border-radius: 8px;
+    border: 2px solid var(--tm-bg, #fff); /* thins the thumb without a second colour */
+  }
 }
 .toolbar {
   /* The search box outlives the scroll. With a few hundred entries, scrolling

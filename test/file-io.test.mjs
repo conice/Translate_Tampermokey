@@ -86,7 +86,34 @@ test('without the picker API the file is still downloaded', async () => {
   assert.equal(window.anchor.clicked, 1);
 });
 
-function fileDocument(file) {
+function failingWritePicker({ at }) {
+  return async () => ({
+    createWritable: async () => ({
+      write: async () => {
+        if (at === 'write') throw new Error('disk full');
+      },
+      close: async () => {
+        if (at === 'close') throw new Error('flush failed');
+      },
+    }),
+  });
+}
+
+test('a write failure after a destination is chosen rejects instead of downloading elsewhere', async () => {
+  const window = downloadWindow({ picker: failingWritePicker({ at: 'write' }) });
+
+  await assert.rejects(saveTextFile(window, { filename: 'book.csv', text: 'a' }), /disk full/);
+  assert.equal(window.anchor.clicked, 0, 'the text must not silently land somewhere else');
+});
+
+test('a close failure after a successful write is reported as a failure', async () => {
+  const window = downloadWindow({ picker: failingWritePicker({ at: 'close' }) });
+
+  await assert.rejects(saveTextFile(window, { filename: 'book.csv', text: 'a' }), /flush failed/);
+  assert.equal(window.anchor.clicked, 0);
+});
+
+function fileDocument(file, view) {
   const input = {
     style: {},
     files: file ? [file] : null,
@@ -97,7 +124,26 @@ function fileDocument(file) {
     createElement: () => input,
     body: { append: (element) => { document.appended = element; } },
   };
+  if (view) document.defaultView = view;
   return { document, input };
+}
+
+/** A page whose focus comes back when the picker closes, and no `cancel` event. */
+function focusView({ fireImmediately }) {
+  const handlers = {};
+  const timers = [];
+  return {
+    handlers,
+    timers,
+    addEventListener: (type, handler) => { handlers[type] = handler; },
+    removeEventListener: (type) => { delete handlers[type]; },
+    setTimeout: (fn) => {
+      if (fireImmediately) fn();
+      else timers.push(fn);
+      return timers.length;
+    },
+    clearTimeout: () => {},
+  };
 }
 
 test('picking a file resolves with its text and cleans up the input', async () => {
@@ -118,5 +164,30 @@ test('dismissing the picker resolves to nothing', async () => {
   const reading = pickTextFile(document);
   input.oncancel();
   assert.equal(await reading, null);
+  assert.equal(input.removed, true);
+});
+
+test('a picker dismissed where the engine never fires cancel still resolves', async () => {
+  const view = focusView({ fireImmediately: true });
+  const { document, input } = fileDocument(null, view);
+  const reading = pickTextFile(document);
+
+  view.handlers.focus();
+
+  assert.equal(await reading, null);
+  assert.equal(input.removed, true, 'the hidden input must not outlive the picker');
+  assert.equal(view.handlers.focus, undefined, 'and neither must the window listener');
+});
+
+test('a chosen file is not mistaken for a dismissal when focus returns first', async () => {
+  const view = focusView({ fireImmediately: false });
+  const { document, input } = fileDocument({ text: async () => 'term\r\n' }, view);
+  const reading = pickTextFile(document);
+
+  view.handlers.focus();
+  view.timers[0](); // the fallback runs while a file is selected: it must not settle
+  await input.onchange();
+
+  assert.equal(await reading, 'term\r\n');
   assert.equal(input.removed, true);
 });
