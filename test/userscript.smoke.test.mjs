@@ -919,12 +919,19 @@ function dictionaryWithAudio(audioUrl = RECORDING) {
 }
 
 /** Boot a page, answer one lookup, and leave its Popup open. */
-async function openPopupWithDictionary(dictionaryBody, { recording = [200, { bytes: true }], playFails = false } = {}) {
+async function openPopupWithDictionary(
+  dictionaryBody,
+  {
+    recording = [200, { bytes: true }],
+    playFails = false,
+    settings = { dictionary: 'dictionaryapi' },
+  } = {},
+) {
   const ctx = boot({
     html: '<p id="t">I run every day.</p>',
     // Pronunciation is independent of which dictionary supplies the meanings;
     // this helper keeps the English-English source so its fixtures stay small.
-    settings: { dictionary: 'dictionaryapi' },
+    settings,
     responses: {
       clients5: [200, [['跑', 'en']]],
       'dictionaryapi.dev/api/v2/entries/en/run': [200, dictionaryBody],
@@ -942,6 +949,27 @@ async function speakButton(document) {
   await until(() => popupText(document).includes('加入生词本'));
   return popup.shadowRoot.querySelector('button.speak');
 }
+
+test('默认播放语音 reads the word without a tap', async () => {
+  const { audio, downloads } = await openPopupWithDictionary(dictionaryWithAudio(), {
+    settings: { dictionary: 'dictionaryapi', autoSpeak: true },
+  });
+
+  assert.ok(await until(() => audio.played.length > 0), 'the setting must start playback by itself');
+  assert.deepEqual(downloads, [RECORDING], 'auto-speak goes through the same recording path as the button');
+  assert.deepEqual(audio.spoken, [], 'one voice, not the recording plus the system voice');
+});
+
+test('a lookup stays silent unless the setting is on', async () => {
+  const { document, audio } = await openPopupWithDictionary(dictionaryWithAudio());
+
+  await until(() => popupText(document).includes('加入生词本'));
+  // Auto-speak would have started by the time the Popup is filled; this extra
+  // tick also catches playback scheduled one microtask later.
+  await wait(50);
+  assert.equal(audio.played.length, 0);
+  assert.deepEqual(audio.spoken, []);
+});
 
 test('the speak button plays the dictionary recording when one exists', async () => {
   const { document, requests, downloads, audio } = await openPopupWithDictionary(dictionaryWithAudio());

@@ -298,7 +298,12 @@ const flow = createLookupFlow({
   book,
   pageLanguage: detectPageLang,
   dictionary,
-  speak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
+  // Automatic playback is not the Popup button's toggle: when the previous
+  // word is still audible, the new Lookup must replace it, not just silence it.
+  speak: (term, lang, audioUrl) => {
+    pronouncer.stop();
+    return pronouncer.play(term, lang, audioUrl);
+  },
   settings: () => settings,
   host,
 });

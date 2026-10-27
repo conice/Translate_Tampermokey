@@ -61,6 +61,7 @@ test('settings round-trip through CSV, maps and lists included', () => {
   const first = createSettings(gm);
   first.setTheme('dark');
   first.setLookupEnabled(false);
+  first.setAutoSpeak(true);
   first.setGlossOn('example.com', true);
   first.setTargetOverride('news.example', 'ja');
 
@@ -69,16 +70,34 @@ test('settings round-trip through CSV, maps and lists included', () => {
   assert.match(raw, /^general,version,1$/m);
   assert.match(raw, /^general,theme,dark$/m);
   assert.match(raw, /^general,lookupEnabled,false$/m);
+  assert.match(raw, /^general,autoSpeak,true$/m);
   assert.match(raw, /^glossSites,example\.com,true$/m);
   assert.match(raw, /^targetOverrides,news\.example,ja$/m);
 
   const second = createSettings(gm);
   assert.equal(second.theme, 'dark');
   assert.equal(second.lookupEnabled, false);
+  assert.equal(second.autoSpeak, true);
   assert.equal(second.glossOn('example.com'), true);
   assert.equal(second.glossOn('other.com'), false);
   assert.equal(second.targetOverride('news.example'), 'ja');
   assert.equal(second.all().version, 1, 'numbers must not come back as strings');
+});
+
+test('auto-speak is off until the user asks for it, and only a boolean counts', () => {
+  const gm = fakeGm();
+  assert.equal(createSettings(gm).autoSpeak, false);
+
+  createSettings(gm).setAutoSpeak(true);
+  assert.equal(createSettings(gm).autoSpeak, true);
+
+  createSettings(gm).setAutoSpeak(false);
+  assert.equal(createSettings(gm).autoSpeak, false);
+
+  const junk = fakeGm({
+    [SETTINGS_KEY]: ['section,key,value', 'general,autoSpeak,yes'].join('\r\n'),
+  });
+  assert.equal(createSettings(junk).autoSpeak, false, 'a hand-edited cell must not read as true');
 });
 
 test('a disabled provider list survives the round trip', () => {

@@ -175,6 +175,58 @@ test('a failing dictionary call does not fail the lookup', async () => {
   assert.equal(popup.calls.at(-1).status, 'ok');
 });
 
+test('a lookup stays silent unless auto-speak is on', async () => {
+  const popup = recorder();
+  const spoken = [];
+  const deps = {
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => ({ phonetic: '/rʌn/', audio: 'https://example.com/run.mp3' }),
+    speak: (...args) => spoken.push(args),
+  };
+
+  await createLookupFlow({ ...deps, settings: () => ({}) }).lookup({ term: 'run' });
+  await createLookupFlow({ ...deps, settings: () => ({ autoSpeak: false }) }).lookup({ term: 'run' });
+  assert.deepEqual(spoken, [], 'sound must be opted into, not a default');
+});
+
+test('auto-speak reads the looked-up word with its recording', async () => {
+  const popup = recorder();
+  const spoken = [];
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '跑', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    dictionary: async () => ({ phonetic: '/rʌn/', audio: 'https://example.com/run.mp3' }),
+    speak: (...args) => spoken.push(args),
+    settings: () => ({ autoSpeak: true }),
+  });
+
+  await flow.lookup({ term: 'Running' });
+  assert.deepEqual(spoken, [['running', 'en', 'https://example.com/run.mp3']]);
+  assert.equal(popup.calls.at(-1).status, 'ok', 'playback must not wait on or alter the render');
+});
+
+test('auto-speak leaves a sentence to the speak button', async () => {
+  const popup = recorder();
+  const spoken = [];
+  const flow = createLookupFlow({
+    popup,
+    translator: async () => [{ translation: '我们都在这儿。', detectedSource: 'en' }],
+    book: fakeBook(),
+    pageLanguage: () => 'en',
+    speak: (...args) => spoken.push(args),
+    settings: () => ({ autoSpeak: true }),
+  });
+
+  await flow.lookup({ term: 'We are all here today and the weather is fine.' });
+  assert.deepEqual(spoken, [], 'reading every selected sentence aloud would be a lecture');
+  assert.ok(popup.calls.at(-1).canSpeak, 'the Popup button is still there for one sentence');
+});
+
 test('lookup honours a per-site target override', async () => {
   const popup = recorder();
   const seen = [];

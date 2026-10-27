@@ -11,7 +11,7 @@ import { createPanel } from '../src/ui/panel.js';
  */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function setup({ entries = [], theme = 'system', dictionary = 'youdao', fileIO, importError } = {}) {
+function setup({ entries = [], theme = 'system', dictionary = 'youdao', autoSpeak = false, fileIO, importError } = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
   const { document } = dom.window;
 
@@ -32,11 +32,14 @@ function setup({ entries = [], theme = 'system', dictionary = 'youdao', fileIO, 
     },
   };
   const dictionaryCalls = [];
+  const autoSpeakCalls = [];
   const settings = {
     lookupEnabled: true,
+    autoSpeak,
     theme,
     dictionary,
     setLookupEnabled() {},
+    setAutoSpeak: (on) => autoSpeakCalls.push(on),
     setTheme() {},
     setDictionary: (id) => dictionaryCalls.push(id),
     glossOn: () => false,
@@ -59,7 +62,7 @@ function setup({ entries = [], theme = 'system', dictionary = 'youdao', fileIO, 
       pickTextFile: async () => null,
     },
   });
-  return { document, panel, removed, importCalls, dictionaryCalls };
+  return { document, panel, removed, importCalls, dictionaryCalls, autoSpeakCalls };
 }
 
 function openSettings(panel) {
@@ -385,6 +388,25 @@ test('an unknown saved dictionary selects the default rather than an empty contr
   const root = openSettings(panel);
 
   assert.equal(root.querySelector('select.dictionary').value, 'youdao');
+});
+
+test('默认播放语音 reflects the stored setting and writes it back', () => {
+  const { panel, autoSpeakCalls } = setup({ autoSpeak: true });
+  panel.open();
+  const root = openSettings(panel);
+
+  const label = [...root.querySelectorAll('label.switch')].find((candidate) =>
+    candidate.textContent.includes('默认播放语音'),
+  );
+  assert.ok(label, 'the Panel owns the switch');
+  assert.match(label.closest('.row').textContent, /查到单词后自动朗读/, 'the label alone is ambiguous');
+
+  const box = label.querySelector('input[type=checkbox]');
+  assert.equal(box.checked, true, 'the Panel must show the value the page will use');
+
+  box.checked = false;
+  box.dispatchEvent(new (panel.host.ownerDocument.defaultView.Event)('change'));
+  assert.deepEqual(autoSpeakCalls, [false]);
 });
 
 test('the replace-or-merge question is hidden until a file is chosen', async () => {

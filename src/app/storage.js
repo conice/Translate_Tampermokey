@@ -12,6 +12,8 @@ const DEFAULTS = {
   version: 1,
   /** Double-click lookup is on everywhere by default: a silently dead install reads as broken. */
   lookupEnabled: true,
+  /** Read every looked-up word aloud. Off by default: sound is intrusive until asked for. */
+  autoSpeak: false,
   /** Inline glosses are off by default and opt-in per site, see ADR-0003. */
   glossSites: {},
   /** host -> target language, overrides Page Language inference. */
@@ -219,6 +221,7 @@ export function createSettings(gm) {
     values.targetOverrides = {};
   }
   if (!Array.isArray(values.disabledProviders)) values.disabledProviders = [];
+  if (typeof values.autoSpeak !== 'boolean') values.autoSpeak = false;
   if (!DICTIONARY_IDS.includes(values.dictionary)) values.dictionary = DEFAULT_DICTIONARY;
 
   function persist() {
@@ -234,6 +237,17 @@ export function createSettings(gm) {
     },
     setLookupEnabled(on) {
       values.lookupEnabled = Boolean(on);
+      persist();
+    },
+    /**
+     * Whether a successful word Lookup reads itself aloud. Sentences never do:
+     * a page reader should not turn every selected paragraph into speech.
+     */
+    get autoSpeak() {
+      return values.autoSpeak === true;
+    },
+    setAutoSpeak(on) {
+      values.autoSpeak = Boolean(on);
       persist();
     },
     glossOn(host) {

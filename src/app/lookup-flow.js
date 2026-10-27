@@ -50,7 +50,7 @@ export function sourceLangOf(term) {
  * @param {object} deps.book            Vocabulary Book
  * @param {Function} [deps.pageLanguage]  () => Page Language code
  * @param {Function} [deps.dictionary]    (word, dictionaryId) => {phonetic, meanings} | undefined
- * @param {Function} [deps.speak]         (term, lang, audioUrl) => void
+ * @param {Function} [deps.speak]         (term, lang, audioUrl) => void, called for a word when auto-speak is on
  * @param {Function} deps.settings        () => settings snapshot
  * @param {string} deps.host              current hostname
  */
@@ -211,6 +211,14 @@ export function createLookupFlow({
         targetOverride,
         onRetry: () => lookup({ term: normalized, anchor, sourceLang }),
       });
+
+      /*
+       * Auto-speak is opt-in and words only: hearing every selected sentence
+       * would turn browsing into a lecture, while the manual button is still
+       * there for one. Playback is best-effort, like every other extra here.
+       */
+      if (config.autoSpeak && speak) speak(normalized, entrySource, details?.audio);
+
       return [entry];
     } catch (error) {
       if (current !== requestId) return [];

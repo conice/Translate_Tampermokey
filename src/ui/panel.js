@@ -432,6 +432,24 @@ export function createPanel({
     lookupLabel.append(lookupBox, document.createTextNode(lookupSwitchLabel));
     lookupRow.append(lookupLabel);
 
+    /*
+     * A reading preference, not a per-lookup choice: someone who wants sound
+     * wants it on every word, so it is a setting rather than a Popup toggle.
+     */
+    const autoSpeakRow = document.createElement('div');
+    autoSpeakRow.className = 'row';
+    const autoSpeakLabel = document.createElement('label');
+    autoSpeakLabel.className = 'switch';
+    const autoSpeakBox = document.createElement('input');
+    autoSpeakBox.type = 'checkbox';
+    autoSpeakBox.checked = Boolean(settings.autoSpeak);
+    autoSpeakBox.onchange = () => settings.setAutoSpeak?.(autoSpeakBox.checked);
+    autoSpeakLabel.append(autoSpeakBox, document.createTextNode('默认播放语音'));
+    const autoSpeakHint = document.createElement('span');
+    autoSpeakHint.className = 'status';
+    autoSpeakHint.textContent = '查到单词后自动朗读';
+    autoSpeakRow.append(autoSpeakLabel, autoSpeakHint);
+
     const themeRow = document.createElement('div');
     themeRow.className = 'row';
     const themeLabel = document.createElement('span');
@@ -603,6 +621,7 @@ export function createPanel({
 
     wrap.append(
       lookupRow,
+      autoSpeakRow,
       themeRow,
       dictionaryRow,
       glossRow,
