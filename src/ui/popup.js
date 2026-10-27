@@ -7,6 +7,7 @@
  */
 import { placeNear } from '../core/gesture.js';
 import { languageLabel, normalizeLangTag } from '../core/lang.js';
+import { DEFAULT_DICTIONARY, DICTIONARY_CHOICES } from '../core/dictionaries.js';
 
 /**
  * Target Languages the Popup offers, as distinct tags. The list is
@@ -20,6 +21,27 @@ const TARGET_CHOICES = [
   ['', '自动'],
   ...['zh-CN', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'ru'].map((tag) => [tag, languageLabel(tag)]),
 ];
+
+/**
+ * The mark on a Dictionary Source's logo. Three sources have a wordmark colour
+ * of their own (Youdao red, Eudic blue) or no mark at all; Microsoft's four
+ * squares are drawn as shapes, since no letter can stand in for them.
+ */
+const DICTIONARY_MARKS = {
+  youdao: { text: '有' },
+  microsoft: { squares: ['#f25022', '#7fba00', '#00a4ef', '#ffb900'] },
+  eudic: { text: 'E' },
+  dictionaryapi: { text: 'EN' },
+};
+
+/** Inline icons, drawn as strokes so they take the surface's colour. */
+const ICONS = {
+  globe:
+    'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 0c2.5 2.4 4 5.4 4 10s-1.5 7.6-4 10c-2.5-2.4-4-5.4-4-10s1.5-7.6 4-10ZM2 12h20',
+  speaker: 'M4 9h4l5-4v14l-5-4H4V9ZM16 8.5a4.5 4.5 0 0 1 0 7M18.8 5.8a8.2 8.2 0 0 1 0 12.4',
+  copy: 'M9 9h10v10H9V9ZM5 15H4V5h10v1',
+  plus: 'M12 5v14M5 12h14',
+};
 
 const STYLE = `
 :host { all: initial; }
@@ -55,41 +77,92 @@ const STYLE = `
   visibility: visible;
   pointer-events: auto;
 }
-.head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.term { font-weight: 600; font-size: 15px; word-break: break-word; }
-.phonetic { color: var(--tm-muted, #6b6b6b); font-size: 12px; }
+.head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.term { font-weight: 650; font-size: 16px; letter-spacing: .01em; word-break: break-word; }
+.phonetic {
+  color: var(--tm-muted, #6b6b6b); font-size: 12px;
+  background: var(--tm-chip, rgba(127,127,127,.1)); border-radius: 5px; padding: 1px 5px;
+}
 .speak {
-  all: unset; cursor: pointer; color: var(--tm-accent, #2563eb); font-size: 12px;
-  border: 1px solid var(--tm-border, #cbd5e1); border-radius: 6px; padding: 1px 6px;
+  all: unset; cursor: pointer; flex: none; width: 24px; height: 24px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--tm-accent, #2563eb); background: var(--tm-accent-soft, #e8f0fe);
 }
 .speak:hover { background: var(--tm-hover, #eff6ff); }
-.translation { margin-top: 6px; font-size: 16px; word-break: break-word; }
+.speak svg { width: 14px; height: 14px; }
+.translation { margin-top: 7px; font-size: 16px; line-height: 1.45; word-break: break-word; }
 /* A sentence was written with line breaks; flattening them changes the meaning
    of what the reader selected. */
 .wrap.sentence .translation { white-space: pre-wrap; }
-.detected { margin-top: 2px; color: var(--tm-muted, #8a8a8a); font-size: 11px; }
+.detected { margin-top: 3px; color: var(--tm-muted, #8a8a8a); font-size: 11px; }
+/*
+ * Two per-lookup decisions, in the two corners where they belong: the
+ * Dictionary Source is a row of logos at the top right, beside the word it
+ * describes; the Target Language is a dropdown at the bottom right, beside the
+ * actions whose result it changes.
+ */
+.dict { display: flex; align-items: center; gap: 1px; margin-left: auto; }
+.logo {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  width: 24px; height: 24px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: .45; transition: opacity .12s ease, box-shadow .12s ease;
+}
+.logo:hover { opacity: .8; }
+/* The chosen source is the only one at full strength, ringed in the accent. */
+.logo[aria-pressed="true"] { opacity: 1; box-shadow: 0 0 0 2px var(--tm-accent, #2563eb); }
+.logo:focus-visible { outline: 2px solid var(--tm-accent, #2563eb); outline-offset: 1px; }
+.logo-mark {
+  width: 18px; height: 18px; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; line-height: 1; letter-spacing: -.02em;
+}
+/*
+ * Each logo keeps its own brand colour rather than a theme colour: a dictionary
+ * is recognised by its mark, and the same red or blue is what the reader knows
+ * from the site.
+ */
+.logo-mark[data-logo="youdao"] { background: #d9271e; color: #fff; }
+.logo-mark[data-logo="eudic"] { background: #1f6ff2; color: #fff; }
+.logo-mark[data-logo="dictionaryapi"] { background: #5b6472; color: #fff; font-size: 8px; }
+.logo-mark.logo-ms svg { width: 15px; height: 15px; }
 .target {
-  display: flex; align-items: center; gap: 6px; margin-top: 8px;
-  color: var(--tm-muted, #6b6b6b); font-size: 12px;
+  display: flex; align-items: center; gap: 5px; margin-left: auto;
+  color: var(--tm-muted, #8a8a8a); font-size: 11px;
 }
 .target select {
-  padding: 2px 5px; border: 1px solid var(--tm-border, #d8d8d8); border-radius: 6px;
-  font: inherit; background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
+  padding: 2px 4px; border: 1px solid var(--tm-border, #d8d8d8); border-radius: 6px;
+  font: inherit; font-size: 11px; max-width: 132px;
+  background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
+.tool-icon { display: inline-flex; color: var(--tm-muted, #9a9a9a); flex: none; }
+.tool-icon svg { width: 12px; height: 12px; }
+.meanings-state { margin-top: 7px; color: var(--tm-muted, #8a8a8a); font-size: 12px; }
 .meanings { margin: 7px 0 0; padding: 0; list-style: none; }
-.meanings li { color: var(--tm-fg, #4b4b4b); opacity: .78; font-size: 12px; margin-top: 3px; }
-.pos { color: var(--tm-pos, #9a6b00); font-style: italic; margin-right: 4px; }
-.actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
-button.primary {
-  all: unset; cursor: pointer; background: var(--tm-accent, #2563eb); color: var(--tm-accent-fg, #fff);
-  border-radius: 7px; padding: 5px 12px; font-size: 13px;
+.meanings li {
+  display: flex; gap: 6px; align-items: baseline;
+  color: var(--tm-fg, #3f3f46); font-size: 12px; line-height: 1.5; margin-top: 4px;
 }
+.pos {
+  flex: none; color: var(--tm-pos, #9a6b00); font-size: 11px; font-weight: 600;
+  background: var(--tm-pos-bg, rgba(154,107,0,.12)); border-radius: 4px; padding: 0 4px;
+}
+.actions { display: flex; align-items: center; gap: 8px; margin-top: 11px; }
+button.primary {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+  background: var(--tm-accent, #2563eb); color: var(--tm-accent-fg, #fff);
+  border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 550;
+}
+button.primary svg { width: 13px; height: 13px; }
 button.primary:hover { filter: brightness(1.08); }
 button.primary[disabled] { background: var(--tm-accent, #2563eb); opacity: .45; cursor: default; }
 button.ghost {
-  all: unset; cursor: pointer; color: var(--tm-muted, #6b6b6b); font-size: 12px; padding: 4px;
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  color: var(--tm-muted, #6b6b6b); font-size: 12px; padding: 4px 5px; border-radius: 6px;
 }
-.hint { color: var(--tm-muted, #9a9a9a); font-size: 11px; margin-left: auto; }
+button.ghost:hover { background: var(--tm-hover, #f2f4f7); }
+button.ghost svg { width: 13px; height: 13px; }
+.hint { color: var(--tm-muted, #9a9a9a); font-size: 11px; }
 .error { color: var(--tm-danger, #b91c1c); }
 .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 
@@ -104,11 +177,19 @@ button.ghost {
   padding: 12px 14px;
   font-size: 15px;
 }
-.wrap.touch button.primary { padding: 11px 16px; font-size: 15px; }
-.wrap.touch button.ghost { padding: 10px; font-size: 14px; }
-.wrap.touch .speak { padding: 7px 10px; font-size: 14px; }
-.wrap.touch .target { font-size: 14px; }
-.wrap.touch .target select { padding: 10px 12px; font-size: 16px; }
+.wrap.touch button.primary { padding: 10px 16px; font-size: 15px; border-radius: 10px; }
+.wrap.touch button.primary svg { width: 15px; height: 15px; }
+.wrap.touch button.ghost { padding: 8px 10px; font-size: 14px; border-radius: 8px; }
+.wrap.touch .speak { width: 34px; height: 34px; }
+.wrap.touch .speak svg { width: 17px; height: 17px; }
+.wrap.touch .logo { width: 32px; height: 32px; }
+.wrap.touch .logo-mark { width: 22px; height: 22px; font-size: 13px; }
+.wrap.touch .logo-mark.logo-ms svg { width: 18px; height: 18px; }
+.wrap.touch .target { font-size: 13px; }
+.wrap.touch .target select { padding: 8px 10px; font-size: 14px; max-width: 150px; }
+.wrap.touch .tool-icon svg { width: 15px; height: 15px; }
+.wrap.touch .meanings-state { font-size: 14px; }
+.wrap.touch .meanings li { font-size: 13px; }
 /* Only the head row shares space with the close button; everything below it
    starts under the button's 36px box. */
 .wrap.touch .head,
@@ -121,7 +202,7 @@ button.ghost {
 }
 `;
 
-export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTargetChange, onClose, touch = false }) {
+export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTargetChange, onDictionaryChange, onClose, touch = false }) {
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -161,16 +242,43 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
 
   let current = null;
 
+  /** An inline stroke icon; `aria-hidden` because the button carries the name. */
+  function icon(path) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const shape = document.createElementNS(NS, 'path');
+    shape.setAttribute('d', path);
+    shape.setAttribute('fill', 'none');
+    shape.setAttribute('stroke', 'currentColor');
+    shape.setAttribute('stroke-width', '1.7');
+    shape.setAttribute('stroke-linecap', 'round');
+    shape.setAttribute('stroke-linejoin', 'round');
+    svg.append(shape);
+    return svg;
+  }
+
+  /** The small glyph that names a control group, e.g. a globe for languages. */
+  function groupIcon(path, label) {
+    const box = el('span', 'tool-icon');
+    box.title = label;
+    box.append(icon(path));
+    return box;
+  }
+
   /**
-   * The per-site Target Language, as a select. It sits in the Popup rather than
-   * the Panel because it is a reading decision made in the moment: change it
-   * and the same word is looked up again without leaving the page.
+   * The per-site Target Language, as a dropdown. It sits at the bottom right of
+   * the Popup rather than in the Panel because it is a reading decision made in
+   * the moment: change it and the same word is looked up again without leaving
+   * the page.
    */
   function targetRow(state) {
     const saved = String(state.targetOverride ?? '').trim().replace(/_/gu, '-');
     const savedBase = normalizeLangTag(saved);
     const row = el('div', 'target');
-    row.append(el('span', 'target-label', '本站目标语言:'));
+    row.append(groupIcon(ICONS.globe, '本站目标语言'));
     const select = document.createElement('select');
     select.className = 'target-select';
     select.setAttribute('aria-label', '本站目标语言');
@@ -202,6 +310,72 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
     return row;
   }
 
+  /** A Dictionary Source's logo: its own mark, not a letter in our colours. */
+  function dictionaryLogo(id) {
+    const mark = document.createElement('span');
+    mark.className = 'logo-mark';
+    const spec = DICTIONARY_MARKS[id];
+    if (spec?.squares) {
+      // Microsoft: the four squares, drawn rather than lettered.
+      mark.classList.add('logo-ms');
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      const cells = [
+        [1.5, 1.5],
+        [13, 1.5],
+        [1.5, 13],
+        [13, 13],
+      ];
+      cells.forEach(([x, y], index) => {
+        const rect = document.createElementNS(NS, 'rect');
+        rect.setAttribute('x', String(x));
+        rect.setAttribute('y', String(y));
+        rect.setAttribute('width', '9.5');
+        rect.setAttribute('height', '9.5');
+        rect.setAttribute('fill', spec.squares[index]);
+        svg.append(rect);
+      });
+      mark.append(svg);
+      return mark;
+    }
+    mark.dataset.logo = id;
+    mark.textContent = spec?.text ?? '';
+    return mark;
+  }
+
+  /**
+   * The Dictionary Source for this Popup, as a row of logos in the top right.
+   * It is deliberately not a setting: switching here is a reading decision for
+   * one word, so the next Lookup starts from the Default Dictionary again.
+   */
+  function dictionaryRow(state) {
+    const row = el('div', 'dict');
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', '释义词典 · 仅本次');
+    row.title = '释义词典(仅本次,不改变默认词典)';
+
+    let selected = state.dictionaryId;
+    if (!DICTIONARY_CHOICES.some(([value]) => value === selected)) {
+      selected = DEFAULT_DICTIONARY;
+    }
+    for (const [value, label] of DICTIONARY_CHOICES) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'logo';
+      button.dataset.dict = value;
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', value === selected ? 'true' : 'false');
+      button.append(dictionaryLogo(value));
+      button.onclick = () => onDictionaryChange?.(value, state);
+      row.append(button);
+    }
+    return row;
+  }
+
   function render(state) {
     current = state;
     wrap.classList.remove('show');
@@ -225,37 +399,37 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
       wrap.append(actions);
     } else if (state.sentence) {
       wrap.append(el('div', 'translation', state.translation));
-      wrap.append(targetRow(state));
       const actions = el('div', 'actions');
       addCopy(actions, state);
-      if (state.canSpeak) {
-        const speak = el('button', 'speak', '🔊');
-        speak.title = '发音';
-        speak.onclick = () => onSpeak?.(state.term, state.sourceLang, state.audio);
-        actions.append(speak);
-      }
+      if (state.canSpeak) actions.append(speakButton(state));
+      actions.append(targetRow(state));
       wrap.append(actions);
     } else {
       const head = el('div', 'head');
       head.append(el('span', 'term', state.term));
       if (state.phonetic) head.append(el('span', 'phonetic', state.phonetic));
-      if (state.canSpeak) {
-        const speak = el('button', 'speak', '🔊');
-        speak.title = '发音';
-        speak.onclick = () => onSpeak?.(state.term, state.sourceLang, state.audio);
-        head.append(speak);
-      }
+      if (state.canSpeak) head.append(speakButton(state));
+      if (state.dictionaryId) head.append(dictionaryRow(state));
       wrap.append(head);
       wrap.append(el('div', 'translation', state.translation));
       if (state.detectedSource) {
         wrap.append(el('div', 'detected', `检测语言:${state.detectedSource}`));
       }
-      wrap.append(targetRow(state));
+      if (state.dictionaryId) {
+        if (state.dictionaryStatus === 'loading') {
+          wrap.append(el('div', 'meanings-state', '正在查询释义…'));
+        } else if (state.dictionaryStatus === 'empty') {
+          wrap.append(el('div', 'meanings-state', '该词典暂无释义'));
+        } else if (state.dictionaryStatus === 'error') {
+          wrap.append(el('div', 'meanings-state error', '释义加载失败'));
+        }
+      }
       if (state.meanings?.length) {
         const list = el('ul', 'meanings');
         for (const meaning of state.meanings) {
           const li = document.createElement('li');
-          li.append(el('span', 'pos', meaning.pos), String(meaning.definition));
+          if (meaning.pos) li.append(el('span', 'pos', meaning.pos));
+          li.append(String(meaning.definition));
           list.append(li);
         }
         wrap.append(list);
@@ -273,16 +447,20 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
         wrap.append(row);
       }
       const actions = el('div', 'actions');
-      const add = el('button', 'primary', state.alreadySaved ? '已在生词本' : '加入生词本');
+      const add = el('button', 'primary');
+      const addLabel = el('span', 'label',
+        state.alreadySaved ? '已在生词本' : '加入生词本');
+      add.append(icon(ICONS.plus), addLabel);
       add.disabled = Boolean(state.alreadySaved) || !state.canSave;
       add.onclick = async () => {
         add.disabled = true;
         await onAdd?.(state.entry, state);
-        add.textContent = '已在生词本';
+        addLabel.textContent = '已在生词本';
       };
       actions.append(add);
       if (!state.canSave) actions.append(el('span', 'hint', '过长,仅可查看'));
       addCopy(actions, state);
+      actions.append(targetRow(state));
       wrap.append(actions);
     }
     setHidden(false);
@@ -293,12 +471,28 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
   }
 
   /**
+   * The speak action: one icon in both the word and the sentence layout, since
+   * playing a recording is the same action for both.
+   */
+  function speakButton(state) {
+    const speak = document.createElement('button');
+    speak.className = 'speak';
+    speak.title = '发音';
+    speak.setAttribute('aria-label', '发音');
+    speak.append(icon(ICONS.speaker));
+    speak.onclick = () => onSpeak?.(state.term, state.sourceLang, state.audio);
+    return speak;
+  }
+
+  /**
    * "Copy translation", the one action a sentence and a word have in common.
    * A refusal (permission policies block the clipboard on plenty of sites) is
    * not worth a message: the label simply stays put.
    */
   function addCopy(actions, state) {
-    const button = el('button', 'ghost copy', '复制译文');
+    const button = el('button', 'ghost copy');
+    const label = el('span', 'label', '复制译文');
+    button.append(icon(ICONS.copy), label);
     button.onclick = async () => {
       let copied = false;
       try {
@@ -306,7 +500,7 @@ export function createPopup({ document, window, onAdd, onSpeak, onCopy, onTarget
       } catch {
         copied = false;
       }
-      button.textContent = copied ? '已复制' : '复制译文';
+      label.textContent = copied ? '已复制' : '复制译文';
     };
     actions.append(button);
     return button;

@@ -6,7 +6,8 @@
  */
 import { pageLanguage, resolveTarget } from './core/lang.js';
 import { normalizeTerm } from './core/normalize.js';
-import { dictionaryDev, freedictionary, createTranslator } from './core/providers.js';
+import { freedictionary, createTranslator } from './core/providers.js';
+import { DEFAULT_DICTIONARY, DICTIONARIES } from './core/dictionaries.js';
 import { createSettings, createBook, createLookupCache } from './app/storage.js';
 import { createLookupFlow, addEntry } from './app/lookup-flow.js';
 import { createPronouncer } from './app/pronunciation.js';
@@ -119,39 +120,51 @@ function detectPageLang() {
 }
 
 /**
- * Dictionary details: IPA, audio and meanings from dictionaryapi.dev, plus the
- * base form from Wiktionary via freedictionaryapi.com. Both are lookup-only and
- * optional, so a failure yields partial or no details rather than an error.
+ * Dictionary details: phonetic, audio and meanings from the selected
+ * Dictionary Source, plus the base form from Wiktionary via
+ * freedictionaryapi.com. Both are lookup-only and optional; a dictionary
+ * failure is shown in the Popup but never fails the Lookup.
  *
- * Results are cached: without this, every repeat lookup of the same word would
- * re-hit both endpoints even when the translation itself came from cache.
+ * Results are cached per source: without this, every repeat lookup of the same
+ * word would re-hit both endpoints even when the translation came from cache.
  */
 const dictionary = createDictionaryLookup({ fetchText, cache });
 
-function createDictionaryLookup({ fetchText, cache }) {
+function createDictionaryLookup({ fetchText, cache, sources = DICTIONARIES }) {
   const inFlight = new Map();
 
-  return async function lookup(word) {
-    const key = `dict|en|en|${word}`;
+  function sourceFor(id) {
+    return (
+      sources.find((source) => source.id === id) ??
+      sources.find((source) => source.id === DEFAULT_DICTIONARY) ??
+      sources[0]
+    );
+  }
+
+  return async function lookup(word, dictionaryId = DEFAULT_DICTIONARY) {
+    const source = sourceFor(dictionaryId);
+    if (!source) return undefined;
+    const key = `dict|${source.id}|en|en|${word}`;
     const cached = cache.get(key);
-    if (cached) return cached.value;
+    // `cache.get` already returns the stored record value, not a wrapper.
+    if (cached) return cached;
     // Two quick double-clicks on the same word must not fire duplicate requests.
     if (inFlight.has(key)) return inFlight.get(key);
 
     const pending = (async () => {
       const [detailsBody, lemmaBody] = await Promise.allSettled([
-        fetchText(dictionaryDev.request({ word })),
-        fetchText(freedictionary.request({ word })),
+        fetchText(source.request({ word })).then((body) => source.parse(body)),
+        fetchText(freedictionary.request({ word })).then((body) =>
+          freedictionary.parseLemma(body),
+        ),
       ]);
 
-      let details;
-      if (detailsBody.status === 'fulfilled') {
-        details = dictionaryDev.parse(detailsBody.value);
-      }
-      let lemma;
-      if (lemmaBody.status === 'fulfilled') {
-        lemma = freedictionary.parseLemma(lemmaBody.value);
-      }
+      // A source that cannot be reached is worth reporting to the Popup; one
+      // that simply has no entry parses to undefined and is not an error.
+      if (detailsBody.status === 'rejected') throw detailsBody.reason;
+      const details = detailsBody.value;
+      const lemma =
+        details?.lemma ?? (lemmaBody.status === 'fulfilled' ? lemmaBody.value : undefined);
       if (!details && !lemma) return undefined;
 
       const value = { ...(details ?? {}), lemma };
@@ -189,6 +202,11 @@ const popup = createPopup({
       flow.lookup({ term: state.term, anchor: state.anchor, sourceLang: state.sourceLang });
     }
   },
+  /*
+   * The dictionary choice in the Popup is temporary by design: it changes what
+   * this Popup shows and nothing else, so no setting is written here.
+   */
+  onDictionaryChange: (id, state) => flow.changeDictionary(id, state),
   onClose: () => {},
 });
 

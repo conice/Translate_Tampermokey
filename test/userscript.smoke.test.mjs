@@ -309,8 +309,10 @@ test('a failing first provider falls through to the next and the popup still fil
   selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
   await until(() => /跑/.test(popupText(document)));
 
-  const translationRequests = requests.filter(
-    (url) => !url.includes('dictionaryapi') && !url.includes('freedictionaryapi'),
+  const translationRequests = requests.filter((url) =>
+    ['clients5.google.com', 'api.mymemory.translated.net', 'lingva.ml'].includes(
+      new URL(url).hostname,
+    ),
   );
   assert.deepEqual(
     translationRequests.map((url) => new URL(url).hostname),
@@ -654,10 +656,21 @@ test('a cached answer is not requested twice, including the dictionary call', as
     html: '<p id="t">I run every day.</p>',
     responses: {
       clients5: [200, [['跑', 'en']]],
-      dictionaryapi: [
+      youdao: [
         200,
-        [{ word: 'run', phonetics: [{ text: '/rʌn/' }], meanings: [{ partOfSpeech: 'verb', definitions: [{ definition: 'move fast' }] }] }],
+        {
+          ec: {
+            word: [
+              {
+                usphone: 'rʌn',
+                usspeech: 'run&type=2',
+                trs: [{ tr: [{ l: { i: ['v. 跑，奔跑'] } }] }],
+              },
+            ],
+          },
+        },
       ],
+      freedictionaryapi: [200, { entries: [] }],
     },
   });
   selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
@@ -667,9 +680,60 @@ test('a cached answer is not requested twice, including the dictionary call', as
   assert.ok(ready, `popup never filled; text=${JSON.stringify(popupText(document))} reqs=${requests.length}`);
   assert.equal(requests.length, 3);
   selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+  // The cached record must still be the details record, not a wrapper around
+  // it: an empty second popup would mean the cache lookup lost the meanings.
+  assert.ok(await until(() => /跑，奔跑/.test(popupText(document))),
+    `cached dictionary details went missing; text=${JSON.stringify(popupText(document))}`);
   await wait(150);
   assert.equal(requests.length, 3);
 });
+test('a dictionary set in the Panel is where every new lookup starts', async () => {
+  const { window, document, requests } = boot({
+    html: '<p id="t">I run every day.</p>',
+    settings: { dictionary: 'microsoft' },
+    responses: {
+      clients5: [200, [['跑', 'en']]],
+      'cn.bing.com': [200, '<div class="qdef"><ul><li><span class="pos">v.</span><span class="def b_regtxt">微软释义</span></li></ul></div>'],
+    },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+
+  assert.ok(await until(() => /微软释义/.test(popupText(document))));
+  assert.ok(requests.some((url) => new URL(url).hostname === 'cn.bing.com'));
+  assert.equal(requests.some((url) => new URL(url).hostname === 'dict.youdao.com'), false,
+    'the default must replace the old dictionary, not add to it');
+});
+
+test('switching the dictionary in the Popup refetches meanings and leaves the default alone', async () => {
+  const { window, document, requests, store } = boot({
+    html: '<p id="t">I run every day.</p>',
+    settings: { dictionary: 'youdao' },
+    responses: {
+      clients5: [200, [['跑', 'en']]],
+      'dict.youdao.com': [200, {
+        ec: { word: [{ usphone: 'rʌn', trs: [{ tr: [{ l: { i: ['v. 有道释义'] } }] }] }] },
+      }],
+      'cn.bing.com': [200, '<div class="qdef"><ul><li><span class="pos">v.</span><span class="def b_regtxt">微软释义</span></li></ul></div>'],
+    },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+  assert.ok(await until(() => /有道释义/.test(popupText(document))));
+
+  const root = document.querySelector('[data-tm=popup-host]').shadowRoot;
+  const chosen = root.querySelector('button[data-dict="youdao"]');
+  assert.equal(chosen.getAttribute('aria-pressed'), 'true');
+  root.querySelector('button[data-dict="microsoft"]').click();
+  assert.ok(await until(() => /微软释义/.test(popupText(document))),
+    'the Popup should show the newly chosen dictionary');
+  assert.equal(
+    root.querySelector('button[data-dict="microsoft"]').getAttribute('aria-pressed'),
+    'true',
+  );
+  assert.match(store.settings, /^general,dictionary,youdao$/m,
+    'a temporary choice must not rewrite the setting');
+  assert.doesNotMatch(store.settings, /general,dictionary,microsoft/);
+});
+
 test('turning glosses on from the menu annotates, and off again restores the page', async () => {
   const { document, menu } = boot({
     html: '<p id="t">I run and walk.</p>',
@@ -858,6 +922,9 @@ function dictionaryWithAudio(audioUrl = RECORDING) {
 async function openPopupWithDictionary(dictionaryBody, { recording = [200, { bytes: true }], playFails = false } = {}) {
   const ctx = boot({
     html: '<p id="t">I run every day.</p>',
+    // Pronunciation is independent of which dictionary supplies the meanings;
+    // this helper keeps the English-English source so its fixtures stay small.
+    settings: { dictionary: 'dictionaryapi' },
     responses: {
       clients5: [200, [['跑', 'en']]],
       'dictionaryapi.dev/api/v2/entries/en/run': [200, dictionaryBody],

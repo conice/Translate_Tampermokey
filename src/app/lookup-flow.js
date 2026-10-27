@@ -6,7 +6,8 @@
  * injected, so the flow can be exercised without a browser.
  */
 import { normalizeTerm, normalizeSentence, scriptOf, canBecomeEntry } from '../core/normalize.js';
-import { resolveTarget } from '../core/lang.js';
+import { normalizeLangTag, resolveTarget } from '../core/lang.js';
+import { DEFAULT_DICTIONARY } from '../core/dictionaries.js';
 
 /** Longest Selection worth a Lookup, in characters. */
 export const MAX_SELECTION_CHARS = 400;
@@ -48,7 +49,7 @@ export function sourceLangOf(term) {
  * @param {Function} deps.translator    (text, source, target) => [{translation, detectedSource}]
  * @param {object} deps.book            Vocabulary Book
  * @param {Function} [deps.pageLanguage]  () => Page Language code
- * @param {Function} [deps.dictionary]    (word) => {phonetic, meanings} | undefined
+ * @param {Function} [deps.dictionary]    (word, dictionaryId) => {phonetic, meanings} | undefined
  * @param {Function} [deps.speak]         (term, lang, audioUrl) => void
  * @param {Function} deps.settings        () => settings snapshot
  * @param {string} deps.host              current hostname
@@ -91,6 +92,7 @@ export function createLookupFlow({
 
     const current = ++requestId;
     const canSave = !sentence;
+    const dictionaryId = config.dictionary ?? DEFAULT_DICTIONARY;
 
     popup.render({
       status: 'loading',
@@ -104,21 +106,6 @@ export function createLookupFlow({
       const [result] = await translator({ text: normalized, source, target });
       if (current !== requestId) return [];
 
-      /*
-       * Dictionary details are a bonus for a word. A sentence has no entry in
-       * a dictionary, and asking anyway would spend a request to learn nothing.
-       */
-      let details;
-      if (dictionary && !sentence) {
-        try {
-          details = await dictionary(normalized);
-        } catch (error) {
-          console.debug('[tm] dictionary lookup failed:', error);
-          details = undefined;
-        }
-      }
-      if (current !== requestId) return [];
-
       const detectedSource = result?.detectedSource;
       const entrySource = detectedSource
         ? detectedSource.split('-')[0]
@@ -126,6 +113,27 @@ export function createLookupFlow({
           ? 'en'
           : source;
       const translation = result?.translation ?? '';
+
+      /*
+       * Dictionary details are a bonus for a word. A sentence has no entry in
+       * a dictionary, and asking for a word in another language only spends a
+       * request: every source here is English-only. A failure is shown in the
+       * Popup but never turns the Lookup into an error.
+       */
+      const usesDictionary = Boolean(dictionary) && !sentence && normalizeLangTag(entrySource) === 'en';
+      let details;
+      let dictionaryStatus;
+      if (usesDictionary) {
+        dictionaryStatus = 'ok';
+        try {
+          details = await dictionary(normalized, dictionaryId);
+          if (!details) dictionaryStatus = 'empty';
+        } catch (error) {
+          console.debug('[tm] dictionary lookup failed:', error);
+          dictionaryStatus = 'error';
+        }
+      }
+      if (current !== requestId) return [];
 
       if (sentence) {
         popup.render({
@@ -188,6 +196,8 @@ export function createLookupFlow({
         phonetic: details?.phonetic,
         audio: details?.audio,
         meanings: details?.meanings,
+        dictionaryId: usesDictionary ? dictionaryId : undefined,
+        dictionaryStatus,
         canSpeak: Boolean(speak),
         canSave,
         lemma,
@@ -217,7 +227,50 @@ export function createLookupFlow({
     }
   }
 
-  return { lookup, readSelection };
+  /**
+   * Show the same word's meanings from another Dictionary Source. This is the
+   * Popup's temporary choice: it never writes the setting, so the next Lookup
+   * starts from the Default Dictionary again.
+   */
+  async function changeDictionary(nextId, state) {
+    if (!dictionary || !state || state.sentence || !state.term || !state.dictionaryId) return;
+    const id = nextId || DEFAULT_DICTIONARY;
+    const current = ++requestId;
+
+    // Clearing the old list first is what keeps the Popup from showing one
+    // dictionary's meanings under another dictionary's name while we wait.
+    popup.render({ ...state, dictionaryId: id, dictionaryStatus: 'loading', meanings: undefined });
+
+    let details;
+    try {
+      details = await dictionary(state.term, id);
+    } catch (error) {
+      if (current !== requestId) return;
+      console.debug('[tm] dictionary switch failed:', error);
+      popup.render({ ...state, dictionaryId: id, dictionaryStatus: 'error', meanings: undefined });
+      return;
+    }
+    if (current !== requestId) return;
+
+    const firstPos = details?.meanings?.[0]?.pos;
+    popup.render({
+      ...state,
+      dictionaryId: id,
+      dictionaryStatus: details ? 'ok' : 'empty',
+      phonetic: details?.phonetic ?? state.phonetic,
+      audio: details?.audio ?? state.audio,
+      meanings: details?.meanings,
+      entry: state.entry
+        ? {
+            ...state.entry,
+            phonetic: details?.phonetic ?? state.entry.phonetic,
+            partOfSpeech: firstPos || state.entry.partOfSpeech,
+          }
+        : state.entry,
+    });
+  }
+
+  return { lookup, readSelection, changeDictionary };
 }
 
 /** Save an Entry from the Popup, refreshing the gloss layer afterwards. */

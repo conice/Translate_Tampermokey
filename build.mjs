@@ -40,6 +40,9 @@ const META = `// ==UserScript==
 // @connect      lingva.ml
 // @connect      api.dictionaryapi.dev
 // @connect      freedictionaryapi.com
+// @connect      dict.youdao.com
+// @connect      cn.bing.com
+// @connect      dict.eudic.net
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==

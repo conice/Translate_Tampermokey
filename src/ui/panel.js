@@ -6,11 +6,15 @@
  * reading and should not be one stray click away.
  */
 import { THEMES } from '../core/theme.js';
+import { DEFAULT_DICTIONARY, DICTIONARY_CHOICES } from '../core/dictionaries.js';
 import { groupBySourceLang } from '../core/store.js';
 import { CSV_ACCEPT, csvFilename, pickTextFile, saveTextFile } from '../app/file-io.js';
 
 /** How each theme reads in the settings control. UI text, so it lives here. */
 const THEME_LABELS = { system: '跟随系统', light: '浅色', dark: '深色' };
+
+/** Words a folded group shows: the newest ones, since those were just saved. */
+const GROUP_PREVIEW = 3;
 
 const STYLE = `
 :host { all: initial; }
@@ -102,11 +106,26 @@ ul.entries { list-style: none; margin: 0; padding: 0 18px; }
  * count travels with the name instead of repeating on every row.
  */
 .group-title {
-  display: flex; align-items: baseline; gap: 6px;
   margin: 0; padding: 12px 18px 2px;
   font-size: 12px; font-weight: 600; letter-spacing: .02em;
   color: var(--tm-muted, #6b6b6b);
 }
+/*
+ * The heading is the control that unfolds the group. A group of three or fewer
+ * has nothing to unfold, so its heading stays plain text.
+ */
+.group-title > .group-toggle {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: baseline; gap: 6px;
+  border-radius: 6px; padding: 3px 7px; margin: -3px -7px;
+}
+.group-title > .group-toggle:hover { background: var(--tm-hover, #f7f7f7); color: var(--tm-fg, #1a1a1a); }
+.group-title > .group-toggle:focus-visible { outline: 2px solid var(--tm-accent, #2563eb); outline-offset: 1px; }
+.group-toggle .chevron {
+  flex: none; width: 9px; height: 9px; align-self: center;
+  transition: transform .15s ease;
+}
+.group-toggle[aria-expanded="true"] .chevron { transform: rotate(90deg); }
 .group-count { font-weight: 400; opacity: .75; }
 ul.entries li {
   display: flex; gap: 10px; align-items: baseline;
@@ -123,7 +142,7 @@ button.small {
 button.small:hover { background: var(--tm-hover, #f7f7f7); }
 .row { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
 label.switch { display: flex; gap: 8px; align-items: center; cursor: pointer; }
-select.theme {
+select.theme, select.dictionary {
   padding: 6px 8px; border: 1px solid var(--tm-border, #ddd); border-radius: 7px;
   font: inherit; background: var(--tm-bg, #fff); color: var(--tm-fg, #1a1a1a);
 }
@@ -146,6 +165,7 @@ select.theme {
   .toolbar { padding: 12px 14px 10px; }
   ul.entries { padding: 0 14px; }
   .group-title { padding: 12px 14px 2px; }
+  .group-title > .group-toggle { padding: 9px 10px; margin: -9px -10px; }
   .empty { padding: 24px 14px; }
   .settings { padding: 12px 14px; }
 }
@@ -185,6 +205,11 @@ export function createPanel({
 
   let tab = 'book';
   let filter = '';
+  /*
+   * Which language groups the reader has unfolded. Kept outside the render so
+   * deleting a word or switching tabs does not fold a group they just opened.
+   */
+  const expandedGroups = new Set();
 
   function close() {
     setHidden(true);
@@ -287,42 +312,100 @@ export function createPanel({
     const container = document.createElement('div');
     container.className = 'groups';
     for (const group of groupBySourceLang(entries)) {
-      const section = document.createElement('section');
-      section.className = 'group';
-      const title = document.createElement('h2');
-      title.className = 'group-title';
-      const count = document.createElement('span');
-      count.className = 'group-count';
-      count.textContent = String(group.entries.length);
-      title.append(document.createTextNode(group.label), count);
-      const list = document.createElement('ul');
-      list.className = 'entries';
-      for (const entry of group.entries) {
-        const li = document.createElement('li');
-        const term = document.createElement('span');
-        term.className = 'term';
-        term.textContent = entry.term;
-        const meta = document.createElement('span');
-        meta.className = 'meta';
-        meta.textContent = [entry.phonetic, `${entry.sourceLang}→${entry.targetLang}`].filter(Boolean).join(' · ');
-        const translation = document.createElement('span');
-        translation.className = 'translation';
-        translation.textContent = entry.translation;
-        const remove = document.createElement('button');
-        remove.className = 'danger';
-        remove.textContent = '删除';
-        remove.onclick = () => {
-          book.remove(entry.entryId);
-          onGlossChange?.();
-          rerenderBody();
-        };
-        li.append(term, meta, translation, remove);
-        list.append(li);
-      }
-      section.append(title, list);
-      container.append(section);
+      container.append(renderGroup(group));
     }
     return container;
+  }
+
+  function chevron() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'chevron');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', 'M9 5l7 7-7 7');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke', 'currentColor');
+    path.setAttribute('stroke-width', '2.4');
+    path.setAttribute('stroke-linecap', 'round');
+    path.setAttribute('stroke-linejoin', 'round');
+    svg.append(path);
+    return svg;
+  }
+
+  /**
+   * One language section. It opens folded to the newest few words: a book of
+   * hundreds would otherwise be a wall of rows, and the newest words are the
+   * ones just saved. The full group is one click on its heading away.
+   */
+  function renderGroup(group) {
+    const total = group.entries.length;
+    // A search is a request to find one particular word; folding a match away
+    // would hide the very row the reader asked for.
+    const searching = Boolean(filter);
+    const expanded = searching || expandedGroups.has(group.lang);
+    const visible = expanded ? group.entries : group.entries.slice(0, GROUP_PREVIEW);
+
+    const section = document.createElement('section');
+    section.className = 'group';
+    section.dataset.lang = group.lang;
+
+    const title = document.createElement('h2');
+    title.className = 'group-title';
+    const label = document.createTextNode(group.label);
+    const count = document.createElement('span');
+    count.className = 'group-count';
+    count.textContent = String(total);
+
+    if (total > GROUP_PREVIEW && !searching) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'group-toggle';
+      toggle.setAttribute('aria-expanded', String(expanded));
+      toggle.title = expanded ? '收起' : `展开全部 ${total} 个`;
+      toggle.append(label, count, chevron());
+      toggle.onclick = () => {
+        if (expandedGroups.has(group.lang)) expandedGroups.delete(group.lang);
+        else expandedGroups.add(group.lang);
+        const next = renderGroup(group);
+        section.replaceWith(next);
+        // The clicked button was just replaced, so put focus on its successor
+        // instead of dropping it back to the top of the page.
+        next.querySelector('.group-toggle')?.focus({ preventScroll: true });
+      };
+      title.append(toggle);
+    } else {
+      title.append(label, count);
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'entries';
+    for (const entry of visible) {
+      const li = document.createElement('li');
+      const term = document.createElement('span');
+      term.className = 'term';
+      term.textContent = entry.term;
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = [entry.phonetic, `${entry.sourceLang}→${entry.targetLang}`].filter(Boolean).join(' · ');
+      const translation = document.createElement('span');
+      translation.className = 'translation';
+      translation.textContent = entry.translation;
+      const remove = document.createElement('button');
+      remove.className = 'danger';
+      remove.textContent = '删除';
+      remove.onclick = () => {
+        book.remove(entry.entryId);
+        onGlossChange?.();
+        rerenderBody();
+      };
+      li.append(term, meta, translation, remove);
+      list.append(li);
+    }
+    section.append(title, list);
+    return section;
   }
 
   function rerenderBody() {
@@ -367,6 +450,32 @@ export function createPanel({
       onThemeChange?.();
     };
     themeRow.append(themeLabel, themeSelect);
+
+    /*
+     * The Default Dictionary is a setting because it is the source every new
+     * Popup starts with. The Popup's own select is the temporary override.
+     */
+    const dictionaryRow = document.createElement('div');
+    dictionaryRow.className = 'row';
+    const dictionaryLabel = document.createElement('span');
+    dictionaryLabel.textContent = '释义词典:';
+    const dictionarySelect = document.createElement('select');
+    dictionarySelect.className = 'dictionary';
+    for (const [value, label] of DICTIONARY_CHOICES) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      dictionarySelect.append(option);
+    }
+    const savedDictionary = settings.dictionary ?? DEFAULT_DICTIONARY;
+    dictionarySelect.value = DICTIONARY_CHOICES.some(([value]) => value === savedDictionary)
+      ? savedDictionary
+      : DEFAULT_DICTIONARY;
+    dictionarySelect.onchange = () => settings.setDictionary?.(dictionarySelect.value);
+    const dictionaryHint = document.createElement('span');
+    dictionaryHint.className = 'status';
+    dictionaryHint.textContent = '释义浮窗里可临时切换';
+    dictionaryRow.append(dictionaryLabel, dictionarySelect, dictionaryHint);
 
     const glossRow = document.createElement('div');
     glossRow.className = 'row';
@@ -495,6 +604,7 @@ export function createPanel({
     wrap.append(
       lookupRow,
       themeRow,
+      dictionaryRow,
       glossRow,
       document.createElement('hr'),
       ioRow,

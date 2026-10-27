@@ -18,6 +18,7 @@ function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
   const copied = [];
   const spoken = [];
   const targetChanges = [];
+  const dictionaryChanges = [];
   const popup = createPopup({
     document: window.document,
     window,
@@ -30,11 +31,12 @@ function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
       return copyResult;
     },
     onTargetChange: (target, state) => targetChanges.push({ target, state }),
+    onDictionaryChange: (dictionaryId, state) => dictionaryChanges.push({ dictionaryId, state }),
     onClose: () => {},
   });
 
   const wrap = popup.host.shadowRoot.querySelector('.wrap');
-  return { window, document: window.document, popup, wrap, copied, spoken, targetChanges };
+  return { window, document: window.document, popup, wrap, copied, spoken, targetChanges, dictionaryChanges };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -152,6 +154,19 @@ test('the target language is a dropdown in the word popup, not the Panel', () =>
   assert.deepEqual(targetChanges, [{ target: 'ja', state }]);
 });
 
+test('the target language sits in the bottom row, beside the actions', () => {
+  const { popup, wrap } = setup();
+  popup.render(word());
+  const target = wrap.querySelector('.target');
+  assert.equal(target.parentElement.className, 'actions',
+    'the language dropdown shares the last row with the actions');
+  assert.equal(target.nextElementSibling, null, 'and is the rightmost thing in it');
+
+  popup.render(sentence());
+  assert.equal(wrap.querySelector('.target').parentElement.className, 'actions');
+  assert.equal(wrap.querySelector('.target').nextElementSibling, null);
+});
+
 test('an existing override is selected, including a code outside the short list', () => {
   const { popup, wrap } = setup();
   popup.render(word({ target: 'pt-BR', targetOverride: 'pt-BR' }));
@@ -178,4 +193,92 @@ test('a sentence result can change the target language too', () => {
   popup.render(sentence({ target: 'ja', targetOverride: 'ja' }));
 
   assert.equal(wrap.querySelector('select.target-select').value, 'ja');
+});
+
+test('the dictionary is a row of logos in the top right of the word popup', () => {
+  const { popup, wrap, dictionaryChanges } = setup();
+  const state = word({
+    dictionaryId: 'youdao',
+    dictionaryStatus: 'ok',
+    meanings: [{ pos: 'v.', definition: '跑' }],
+  });
+  popup.render(state);
+
+  const group = wrap.querySelector('.dict');
+  assert.ok(group, 'the meanings need their source on screen');
+  assert.equal(group.parentElement.className, 'head',
+    'the dictionary belongs beside the word it describes');
+  assert.equal(group.nextElementSibling, null, 'and is the rightmost thing in the head');
+  assert.match(group.title, /仅本次/, 'the temporary scope must be stated');
+
+  const logos = [...group.querySelectorAll('button.logo')];
+  assert.deepEqual(logos.map((logo) => logo.dataset.dict), [
+    'youdao',
+    'microsoft',
+    'eudic',
+    'dictionaryapi',
+  ]);
+  assert.deepEqual(logos.map((logo) => logo.title), [
+    '有道词典',
+    '微软词典',
+    '欧陆词典',
+    '英英词典',
+  ]);
+  assert.equal(group.querySelector('select'), null, 'a dropdown is what this row replaced');
+  assert.equal(logos[0].getAttribute('aria-pressed'), 'true');
+  assert.equal(
+    logos[0].querySelector('.logo-mark').textContent,
+    '有',
+    'each source carries its own mark',
+  );
+  assert.equal(
+    logos[1].querySelectorAll('.logo-ms rect').length,
+    4,
+    'Microsoft keeps its four-square mark',
+  );
+
+  logos[1].click();
+  assert.deepEqual(dictionaryChanges, [{ dictionaryId: 'microsoft', state }]);
+});
+
+test('a word the dictionaries cannot help with shows no selector at all', () => {
+  const { popup, wrap } = setup();
+  // Non-English words and sentences have no meaning lookup, so `dictionaryId`
+  // is absent and the row must not render an empty control.
+  popup.render(word({ dictionaryId: undefined }));
+
+  assert.equal(wrap.querySelector('.dict'), null);
+  assert.equal(wrap.querySelector('button[data-dict]'), null);
+});
+
+test('a sentence result has no dictionary row even if its state names one', () => {
+  const { popup, wrap } = setup();
+  popup.render(sentence({ dictionaryId: 'youdao' }));
+
+  assert.equal(wrap.querySelector('button[data-dict]'), null);
+});
+
+test('a dictionary id outside the list falls back to the default', () => {
+  const { popup, wrap } = setup();
+  popup.render(word({ dictionaryId: 'gone', dictionaryStatus: 'ok' }));
+
+  assert.equal(
+    wrap.querySelector('button[data-dict="youdao"]').getAttribute('aria-pressed'),
+    'true',
+  );
+});
+
+test('the Popup says why there are no meanings, without hiding the translation', () => {
+  const cases = [
+    ['loading', /正在查询释义/],
+    ['empty', /该词典暂无释义/],
+    ['error', /释义加载失败/],
+  ];
+  for (const [dictionaryStatus, text] of cases) {
+    const { popup, wrap } = setup();
+    popup.render(word({ dictionaryId: 'eudic', dictionaryStatus }));
+    assert.match(wrap.querySelector('.meanings-state').textContent, text);
+    assert.equal(wrap.querySelector('.translation').textContent, '跑',
+      'a dictionary problem must not take the translation down');
+  }
 });

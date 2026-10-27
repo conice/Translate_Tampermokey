@@ -1,5 +1,6 @@
 import { createCache } from '../core/cache.js';
 import { decodeCsv, encodeCsv } from '../core/csv.js';
+import { DEFAULT_DICTIONARY, DICTIONARY_IDS } from '../core/dictionaries.js';
 import { createStore, entriesToCsv, readEntriesCsv } from '../core/store.js';
 import { normalizeTheme } from '../core/theme.js';
 
@@ -17,6 +18,8 @@ const DEFAULTS = {
   targetOverrides: {},
   /** Provider ids the user disabled. */
   disabledProviders: [],
+  /** Dictionary Source used for meanings, unless the Popup is switched for one lookup. */
+  dictionary: DEFAULT_DICTIONARY,
   /** 'system' follows the OS; 'light' / 'dark' force a theme on every surface. */
   theme: 'system',
 };
@@ -216,6 +219,7 @@ export function createSettings(gm) {
     values.targetOverrides = {};
   }
   if (!Array.isArray(values.disabledProviders)) values.disabledProviders = [];
+  if (!DICTIONARY_IDS.includes(values.dictionary)) values.dictionary = DEFAULT_DICTIONARY;
 
   function persist() {
     storage.write(values);
@@ -250,6 +254,15 @@ export function createSettings(gm) {
     },
     disabledProviders() {
       return [...values.disabledProviders];
+    },
+    /** The Default Dictionary: the source every new Popup starts with. */
+    get dictionary() {
+      return values.dictionary;
+    },
+    setDictionary(id) {
+      if (!DICTIONARY_IDS.includes(id)) return;
+      values.dictionary = id;
+      persist();
     },
     get theme() {
       return normalizeTheme(values.theme);

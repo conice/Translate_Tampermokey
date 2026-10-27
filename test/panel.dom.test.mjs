@@ -11,7 +11,7 @@ import { createPanel } from '../src/ui/panel.js';
  */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function setup({ entries = [], theme = 'system', fileIO, importError } = {}) {
+function setup({ entries = [], theme = 'system', dictionary = 'youdao', fileIO, importError } = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
   const { document } = dom.window;
 
@@ -31,11 +31,14 @@ function setup({ entries = [], theme = 'system', fileIO, importError } = {}) {
       return { added: 1, updated: 0, skipped: 0 };
     },
   };
+  const dictionaryCalls = [];
   const settings = {
     lookupEnabled: true,
     theme,
+    dictionary,
     setLookupEnabled() {},
     setTheme() {},
+    setDictionary: (id) => dictionaryCalls.push(id),
     glossOn: () => false,
     setGlossOn() {},
     targetOverride: () => '',
@@ -56,7 +59,7 @@ function setup({ entries = [], theme = 'system', fileIO, importError } = {}) {
       pickTextFile: async () => null,
     },
   });
-  return { document, panel, removed, importCalls };
+  return { document, panel, removed, importCalls, dictionaryCalls };
 }
 
 function openSettings(panel) {
@@ -100,6 +103,9 @@ test('a long book is listed in full inside a body that can scroll', () => {
   panel.open();
 
   const root = panel.host.shadowRoot;
+  // Groups open folded to their newest few, so the full list is one click on
+  // the heading — and the scroll rules below must hold for it.
+  root.querySelector('.group-toggle').click();
   assert.equal(root.querySelectorAll('ul.entries li').length, 300);
 
   const style = css(panel);
@@ -111,6 +117,76 @@ test('a long book is listed in full inside a body that can scroll', () => {
   assert.match(body, /scrollbar-width:\s*thin/, 'a phone otherwise shows nothing until you drag');
   assert.match(style, /@supports not \(scrollbar-width: thin\) \{[\s\S]*?-webkit-scrollbar-thumb/,
     'the WebKit rule must be gated: the standard properties switch it off on current engines');
+});
+
+test('each language group opens folded to its three newest words', () => {
+  const { panel } = setup({
+    entries: [entry(1), entry(2), entry(3), entry(4), entry(5, { sourceLang: 'ja', term: '猫', normalized: '猫' })],
+  });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  const groups = [...root.querySelectorAll('.group')];
+  assert.deepEqual(
+    [...groups[0].querySelectorAll('.term')].map((term) => term.textContent),
+    ['word004', 'word003', 'word002'],
+    'newest first, and only the newest three',
+  );
+  assert.equal(groups[0].querySelector('.group-count').textContent, '4',
+    'the heading still says how many there are in all');
+  assert.equal(groups[0].querySelector('.group-toggle').getAttribute('aria-expanded'), 'false');
+  assert.equal(groups[1].querySelector('.group-toggle'), null,
+    'a group that fits in the preview has nothing to unfold');
+});
+
+test('clicking the group heading shows the whole group, and clicking again folds it', () => {
+  const { panel } = setup({ entries: Array.from({ length: 6 }, (_, i) => entry(i + 1)) });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  const toggle = root.querySelector('.group-toggle');
+  assert.equal(root.querySelectorAll('ul.entries li').length, 3);
+
+  toggle.click();
+  assert.equal(root.querySelectorAll('ul.entries li').length, 6);
+  const expanded = root.querySelector('.group-toggle');
+  assert.equal(expanded.getAttribute('aria-expanded'), 'true');
+  assert.equal(expanded.title, '收起');
+  assert.equal(root.activeElement, expanded,
+    'focus must land on the new heading, not fall back to the page');
+
+  expanded.click();
+  assert.equal(root.querySelectorAll('ul.entries li').length, 3);
+  assert.equal(root.querySelector('.group-toggle').getAttribute('aria-expanded'), 'false');
+});
+
+test('a search shows every match, even inside a folded group', () => {
+  const { panel } = setup({ entries: Array.from({ length: 8 }, (_, i) => entry(i + 1)) });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  const search = root.querySelector('.search');
+  search.value = 'word00';
+  search.dispatchEvent(new (panel.host.ownerDocument.defaultView.Event)('input'));
+  assert.equal(root.querySelectorAll('ul.entries li').length, 8,
+    'hiding a row the reader just searched for would be a broken result');
+  assert.equal(root.querySelector('.group-toggle'), null,
+    'while filtering, the heading has nothing to hide');
+});
+
+test('unfolding survives deleting a word from the group', () => {
+  const { panel, removed } = setup({ entries: Array.from({ length: 5 }, (_, i) => entry(i + 1)) });
+  panel.open();
+
+  const root = panel.host.shadowRoot;
+  root.querySelector('.group-toggle').click();
+  assert.equal(root.querySelectorAll('ul.entries li').length, 5);
+
+  root.querySelector('ul.entries li button.danger').click();
+  assert.deepEqual(removed, ['en|word005']);
+  assert.equal(root.querySelectorAll('ul.entries li').length, 4,
+    'the group must not fold itself again just because a row was deleted');
+  assert.equal(root.querySelector('.group-toggle').getAttribute('aria-expanded'), 'true');
 });
 
 test('the dialog cannot overflow the backdrop that holds it', () => {
@@ -281,6 +357,34 @@ test('the target language is not a settings field any more', () => {
 
   assert.doesNotMatch(root.querySelector('.settings').textContent, /本站目标语言/,
     'the per-site target is changed from the Popup, where the translation is on screen');
+});
+
+test('the default dictionary is a setting, and the Popup may override it per lookup', () => {
+  const { panel, dictionaryCalls } = setup({ dictionary: 'eudic' });
+  panel.open();
+  const root = openSettings(panel);
+
+  const select = root.querySelector('select.dictionary');
+  assert.ok(select, 'the Panel owns the default');
+  assert.equal(select.value, 'eudic');
+  assert.deepEqual(
+    [...select.options].map((option) => option.textContent).slice(0, 3),
+    ['有道词典', '微软词典', '欧陆词典'],
+  );
+  assert.match(select.closest('.row').textContent, /释义浮窗里可临时切换/,
+    'the setting must not read as locking every lookup');
+
+  select.value = 'microsoft';
+  select.dispatchEvent(new (panel.host.ownerDocument.defaultView.Event)('change'));
+  assert.deepEqual(dictionaryCalls, ['microsoft']);
+});
+
+test('an unknown saved dictionary selects the default rather than an empty control', () => {
+  const { panel } = setup({ dictionary: 'gone' });
+  panel.open();
+  const root = openSettings(panel);
+
+  assert.equal(root.querySelector('select.dictionary').value, 'youdao');
 });
 
 test('the replace-or-merge question is hidden until a file is chosen', async () => {
