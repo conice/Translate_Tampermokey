@@ -2251,12 +2251,23 @@ function addEntry(book, entry, onSaved) {
   return true;
 }
 
+/** Remove an Entry from the Popup, refreshing the gloss layer afterwards. */
+function removeEntry(book, entry, onRemoved) {
+  if (!entry?.sourceLang || !entry?.normalized) return false;
+  const entryId = `${entry.sourceLang}|${entry.normalized}`;
+  if (!book.has(entryId)) return false;
+  book.remove(entryId);
+  onRemoved?.(entryId);
+  return true;
+}
+
   return {
     MAX_SELECTION_CHARS,
     readSelection,
     sourceLangOf,
     createLookupFlow,
     addEntry,
+    removeEntry,
   };
 })();
 
@@ -2574,6 +2585,7 @@ const ICONS = {
   speaker: 'M4 9h4l5-4v14l-5-4H4V9ZM16 8.5a4.5 4.5 0 0 1 0 7M18.8 5.8a8.2 8.2 0 0 1 0 12.4',
   copy: 'M9 9h10v10H9V9ZM5 15H4V5h10v1',
   plus: 'M12 5v14M5 12h14',
+  minus: 'M5 12h14',
 };
 
 const STYLE = `
@@ -2690,6 +2702,14 @@ button.primary {
 button.primary svg { width: 13px; height: 13px; }
 button.primary:hover { filter: brightness(1.08); }
 button.primary[disabled] { background: var(--tm-accent, #2563eb); opacity: .45; cursor: default; }
+/*
+ * Already in the book: the same button now removes the Entry. It keeps the
+ * position and size of the save button, but the accent colour would read as
+ * "save", so it takes the removal colour instead.
+ */
+button.primary.saved { background: var(--tm-chip, #f1f3f5); color: var(--tm-danger, #b91c1c); }
+button.primary.saved:hover { background: var(--tm-hover, #eff6ff); }
+button.primary.saved[disabled] { background: var(--tm-chip, #f1f3f5); }
 button.ghost {
   all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
   color: var(--tm-muted, #6b6b6b); font-size: 12px; padding: 4px 5px; border-radius: 6px;
@@ -2736,7 +2756,7 @@ button.ghost svg { width: 13px; height: 13px; }
 }
 `;
 
-function createPopup({ document, window, onAdd, onSpeak, onCopy, onTargetChange, onDictionaryChange, onClose, touch = false }) {
+function createPopup({ document, window, onAdd, onRemove, onSpeak, onCopy, onTargetChange, onDictionaryChange, onClose, touch = false }) {
   const el = (tag, className, text) => {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -2988,17 +3008,46 @@ function createPopup({ document, window, onAdd, onSpeak, onCopy, onTargetChange,
         wrap.append(row);
       }
       const actions = el('div', 'actions');
-      const add = el('button', 'primary');
-      const addLabel = el('span', 'label',
-        state.alreadySaved ? '已在生词本' : '加入生词本');
-      add.append(icon(ICONS.plus), addLabel);
-      add.disabled = Boolean(state.alreadySaved) || !state.canSave;
-      add.onclick = async () => {
-        add.disabled = true;
-        await onAdd?.(state.entry, state);
-        addLabel.textContent = '已在生词本';
+      /*
+       * One button, two meanings. An Entry already in the book must still be
+       * removable from here — otherwise the only way back is the Panel — so the
+       * same button flips between "加入生词本" and "移出生词本" instead of
+       * sitting disabled.
+       */
+      const save = el('button', 'primary');
+      const saveLabel = el('span', 'label');
+      /*
+       * The label follows the book, and the state object follows the label, so
+       * a re-render of this Popup (switching the Dictionary Source, say) keeps
+       * whichever side the user is on.
+       */
+      const showSaved = (saved) => {
+        state.alreadySaved = saved;
+        save.classList.toggle('saved', saved);
+        save.replaceChildren(icon(saved ? ICONS.minus : ICONS.plus), saveLabel);
+        saveLabel.textContent = saved ? '移出生词本' : '加入生词本';
       };
-      actions.append(add);
+      showSaved(Boolean(state.alreadySaved));
+      save.disabled = !state.canSave;
+      save.onclick = async () => {
+        save.disabled = true;
+        try {
+          if (state.alreadySaved) {
+            // Whatever the book held for this Entry, it does not hold it now.
+            // A stale "saved" state (removed from the Panel meanwhile) must not
+            // leave the button claiming a removal that already happened.
+            await onRemove?.(state.entry, state);
+            showSaved(false);
+          } else {
+            // Saving is only claimed when the book actually took the Entry.
+            showSaved((await onAdd?.(state.entry, state)) !== false);
+          }
+        } finally {
+          // Never leave a dead button behind, whatever the book did.
+          save.disabled = false;
+        }
+      };
+      actions.append(save);
       if (!state.canSave) actions.append(el('span', 'hint', '过长,仅可查看'));
       addCopy(actions, state);
       actions.append(targetRow(state));
@@ -4829,7 +4878,7 @@ const { normalizeTerm } = __mod_core_normalize;
 const { freedictionary, createTranslator } = __mod_core_providers;
 const { DEFAULT_DICTIONARY, DICTIONARIES } = __mod_core_dictionaries;
 const { createSettings, createBook, createLookupCache } = __mod_app_storage;
-const { createLookupFlow, addEntry } = __mod_app_lookup_flow;
+const { createLookupFlow, addEntry, removeEntry } = __mod_app_lookup_flow;
 const { createPronouncer } = __mod_app_pronunciation;
 const { createPopup } = __mod_ui_popup;
 const { createBubble } = __mod_ui_bubble;
@@ -5030,8 +5079,18 @@ const popup = createPopup({
   window,
   touch: touchPrimary,
   onAdd: async (entry) => {
-    if (!entry) return;
-    addEntry(book, entry, () => refreshGlosses());
+    if (!entry) return false;
+    return addEntry(book, entry, () => refreshGlosses());
+  },
+  /*
+   * The Popup's save button turns into a remove button for an Entry already in
+   * the book. Removing must reach the page as well as the store: the gloss for
+   * this word has to disappear with it, so the layer is refreshed from the
+   * new book, not left showing a translation that is no longer saved.
+   */
+  onRemove: async (entry) => {
+    if (!entry) return false;
+    return removeEntry(book, entry, () => refreshGlosses({ force: true }));
   },
   onSpeak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
   onCopy: copyText,

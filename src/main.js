@@ -9,7 +9,7 @@ import { normalizeTerm } from './core/normalize.js';
 import { freedictionary, createTranslator } from './core/providers.js';
 import { DEFAULT_DICTIONARY, DICTIONARIES } from './core/dictionaries.js';
 import { createSettings, createBook, createLookupCache } from './app/storage.js';
-import { createLookupFlow, addEntry } from './app/lookup-flow.js';
+import { createLookupFlow, addEntry, removeEntry } from './app/lookup-flow.js';
 import { createPronouncer } from './app/pronunciation.js';
 import { createPopup } from './ui/popup.js';
 import { createBubble } from './ui/bubble.js';
@@ -188,8 +188,18 @@ const popup = createPopup({
   window,
   touch: touchPrimary,
   onAdd: async (entry) => {
-    if (!entry) return;
-    addEntry(book, entry, () => refreshGlosses());
+    if (!entry) return false;
+    return addEntry(book, entry, () => refreshGlosses());
+  },
+  /*
+   * The Popup's save button turns into a remove button for an Entry already in
+   * the book. Removing must reach the page as well as the store: the gloss for
+   * this word has to disappear with it, so the layer is refreshed from the
+   * new book, not left showing a translation that is no longer saved.
+   */
+  onRemove: async (entry) => {
+    if (!entry) return false;
+    return removeEntry(book, entry, () => refreshGlosses({ force: true }));
   },
   onSpeak: (term, lang, audioUrl) => pronouncer.play(term, lang, audioUrl),
   onCopy: copyText,

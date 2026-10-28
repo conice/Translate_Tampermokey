@@ -11,7 +11,7 @@ import { createPopup } from '../src/ui/popup.js';
  * popup.js reads `window` for the viewport bounds; the module takes only a
  * document, so the jsdom window is installed as the global for the test.
  */
-function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
+function setup({ copyResult = true, copyThrows = false, touch = false, removeResult = true } = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
   const { window } = dom;
 
@@ -19,11 +19,20 @@ function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
   const spoken = [];
   const targetChanges = [];
   const dictionaryChanges = [];
+  const added = [];
+  const removed = [];
   const popup = createPopup({
     document: window.document,
     window,
     touch,
-    onAdd: async () => {},
+    onAdd: async (entry, state) => {
+      added.push({ entry, state });
+      return true;
+    },
+    onRemove: async (entry, state) => {
+      removed.push({ entry, state });
+      return removeResult;
+    },
     onSpeak: (...args) => spoken.push(args),
     onCopy: async (text) => {
       copied.push(text);
@@ -36,7 +45,18 @@ function setup({ copyResult = true, copyThrows = false, touch = false } = {}) {
   });
 
   const wrap = popup.host.shadowRoot.querySelector('.wrap');
-  return { window, document: window.document, popup, wrap, copied, spoken, targetChanges, dictionaryChanges };
+  return {
+    window,
+    document: window.document,
+    popup,
+    wrap,
+    copied,
+    spoken,
+    targetChanges,
+    dictionaryChanges,
+    added,
+    removed,
+  };
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -97,6 +117,87 @@ test('a word result keeps its controls and gains copy', () => {
   assert.ok(wrap.querySelector('.term'));
   assert.equal(wrap.querySelector('.close').style.display, 'none', 'desktop keeps click-away to close');
 });
+
+test('a word already in the book offers to remove it, not a dead button', async () => {
+  const { popup, wrap, removed, added } = setup();
+  const entry = { normalized: 'run', sourceLang: 'en', translation: '跑' };
+  const state = word({ alreadySaved: true, entry });
+  popup.render(state);
+
+  const button = wrap.querySelector('button.primary');
+  assert.equal(button.disabled, false, 'removal must be reachable from the Popup');
+  assert.equal(button.textContent, '移出生词本');
+  assert.match(button.className, /saved/, 'the removal state is styled apart from saving');
+
+  button.click();
+  await tick();
+
+  assert.deepEqual(removed.map((call) => call.entry), [entry]);
+  assert.equal(added.length, 0, 'a saved word must not be saved twice');
+  assert.equal(button.textContent, '加入生词本', 'the same button now offers to save it again');
+  assert.equal(button.disabled, false);
+  assert.doesNotMatch(button.className, /saved/);
+  assert.equal(state.alreadySaved, false);
+});
+
+test('a word not yet in the book still saves, and then offers removal', async () => {
+  const { popup, wrap, added, removed } = setup();
+  popup.render(word());
+
+  const button = wrap.querySelector('button.primary');
+  assert.equal(button.textContent, '加入生词本');
+  button.click();
+  await tick();
+
+  assert.equal(added.length, 1);
+  assert.equal(removed.length, 0);
+  assert.equal(button.textContent, '移出生词本');
+  assert.match(button.className, /saved/);
+});
+
+test('a save the book refuses does not claim the word is in it', async () => {
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true });
+  const { window } = dom;
+  const popup = createPopup({
+    document: window.document,
+    window,
+    onAdd: async () => false,
+    onClose: () => {},
+  });
+  const wrap = popup.host.shadowRoot.querySelector('.wrap');
+  popup.render(word());
+  wrap.querySelector('button.primary').click();
+  await tick();
+
+  assert.equal(wrap.querySelector('button.primary').textContent, '加入生词本');
+});
+
+test('a removal that finds nothing leaves the button offering to save again', async () => {
+  const { popup, wrap } = setup({ removeResult: false });
+  popup.render(word({ alreadySaved: true }));
+
+  const button = wrap.querySelector('button.primary');
+  button.click();
+  await tick();
+
+  /*
+   * `false` means the book did not hold this Entry (removed from the Panel in
+   * the meantime). The button must describe the book as it is, not the click.
+   */
+  assert.equal(button.textContent, '加入生词本');
+  assert.doesNotMatch(button.className, /saved/);
+  assert.equal(button.disabled, false);
+});
+
+test('an over-long word cannot be saved or removed', () => {
+  const { popup, wrap } = setup();
+  popup.render(word({ canSave: false, alreadySaved: true }));
+
+  const button = wrap.querySelector('button.primary');
+  assert.equal(button.disabled, true);
+  assert.match(wrap.textContent, /过长,仅可查看/);
+});
+
 
 test('copying a word sends the translation to the clipboard', async () => {
   const { popup, wrap, copied } = setup();

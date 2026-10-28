@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readSelection, sourceLangOf, createLookupFlow, addEntry } from '../src/app/lookup-flow.js';
+import { readSelection, sourceLangOf, createLookupFlow, addEntry, removeEntry } from '../src/app/lookup-flow.js';
 
 function fakeSelection(text, rangeCount = 1) {
   return { rangeCount, toString: () => text };
@@ -13,6 +13,9 @@ function fakeBook() {
     add: (entry) => {
       map.set(entry.entryId, entry);
       return entry;
+    },
+    remove: (id) => {
+      map.delete(id);
     },
     get: (id) => map.get(id),
     size: () => map.size,
@@ -395,6 +398,23 @@ test('addEntry refuses an entry with no translation', () => {
   const book = fakeBook();
   assert.equal(addEntry(book, { normalized: 'x', sourceLang: 'en' }), false);
   assert.equal(book.size(), 0);
+});
+
+test('removeEntry takes the entry out and notifies', () => {
+  const book = fakeBook();
+  book.add({ entryId: 'en|run', normalized: 'run', sourceLang: 'en' });
+  const removed = [];
+  assert.equal(removeEntry(book, { normalized: 'run', sourceLang: 'en' }, (id) => removed.push(id)), true);
+  assert.equal(book.has('en|run'), false);
+  assert.deepEqual(removed, ['en|run']);
+});
+
+test('removeEntry reports that there was nothing to remove', () => {
+  const book = fakeBook();
+  const removed = [];
+  assert.equal(removeEntry(book, { normalized: 'run', sourceLang: 'en' }, (id) => removed.push(id)), false);
+  assert.equal(removeEntry(book, {}, () => {}), false);
+  assert.deepEqual(removed, [], 'a no-op must not trigger a gloss refresh');
 });
 test('a lemma hint is offered with its own translation', async () => {
   const popup = recorder();

@@ -316,6 +316,46 @@ test('saving from the popup writes an entry and glides into the gloss layer', as
     'the book must be stored as CSV, not as one JSON blob');
 });
 
+test('a saved word can be removed again from the same popup, and its gloss goes with it', async () => {
+  const { window, document, store } = boot({
+    url: 'https://example.com/article',
+    html: '<p id="t">I run every day.</p>',
+    settings: {
+      version: 1,
+      lookupEnabled: true,
+      glossSites: { 'example.com': true },
+      targetOverrides: {},
+      disabledProviders: [],
+    },
+    responses: { clients5: [200, [['跑', 'en']]] },
+  });
+  selectAndDoubleClick(window, document.getElementById('t'), 2, 5);
+  await until(() => popupText(document).includes('加入生词本'));
+
+  const root = document.querySelector('[data-tm=popup-host]').shadowRoot;
+  root.querySelector('button.primary').click();
+
+  assert.ok(
+    await until(() => document.getElementById('t').textContent.includes('跑')),
+    'saving glides the word into the gloss layer',
+  );
+  assert.equal(
+    await until(() => root.querySelector('button.primary')?.textContent === '移出生词本'),
+    true,
+    'the button now offers removal',
+  );
+
+  root.querySelector('button.primary').click();
+
+  assert.ok(
+    await until(() => !document.getElementById('t').textContent.includes('跑')),
+    'removing the word must take its gloss off the page',
+  );
+  assert.equal(document.querySelectorAll('.tm-gloss-annot').length, 0);
+  assert.equal(STORAGE_CODECS.entries.decode(store.entries).length, 0, 'the book is empty again');
+  assert.equal(root.querySelector('button.primary').textContent, '加入生词本', 'and it can be saved again');
+});
+
 test('a failing first provider falls through to the next and the popup still fills', async () => {
   const { window, document, requests } = boot({
     html: '<p id="t">I run every day.</p>',

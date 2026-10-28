@@ -304,3 +304,13 @@ export function addEntry(book, entry, onSaved) {
   onSaved?.(written);
   return true;
 }
+
+/** Remove an Entry from the Popup, refreshing the gloss layer afterwards. */
+export function removeEntry(book, entry, onRemoved) {
+  if (!entry?.sourceLang || !entry?.normalized) return false;
+  const entryId = `${entry.sourceLang}|${entry.normalized}`;
+  if (!book.has(entryId)) return false;
+  book.remove(entryId);
+  onRemoved?.(entryId);
+  return true;
+}
